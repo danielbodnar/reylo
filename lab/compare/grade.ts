@@ -45,7 +45,7 @@ function run(answers: Answers, dbs: Db[], group: string, probes: Probe[], check:
     if (!sql) continue;
     const a = answers[key(db, group, p)];
     if (!a) continue;
-    const found: Problem[] = a.ok ? check(p, a, db) : [{ text: `it reports an error: ${a.error ?? "unknown"}` }];
+    const found: Problem[] = !a.ok ? [{ text: `it reports an error: ${a.error ?? "unknown"}` }] : a.untyped ? [{ text: `it types each row as \`${a.untyped}\`` }, ...check(p, { ...a, columns: [] }, db).filter((f) => f.param)] : check(p, a, db);
     const { ok: _, ...answer } = a;
     out.push({ db, probe: p.id, sql, ok: found.length === 0, problems: found.map((f) => f.text), at: found.map(({ text: _, ...at }) => at), answer });
   }

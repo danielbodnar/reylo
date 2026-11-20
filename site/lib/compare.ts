@@ -19,6 +19,14 @@ export const compareTools = [
   { id: 'postgrestypedsql', name: 'Typed SQL', sub: 'Postgres', href: 'https://github.com/fli/postgres-typed-sql' },
 ];
 
+/** The ORMs and query builders, in the second table. */
+export const compareOrms = [
+  { id: 'prisma', name: 'Prisma', sub: 'ORM', href: 'https://www.prisma.io/orm' },
+  { id: 'drizzle', name: 'Drizzle', sub: 'ORM', href: 'https://orm.drizzle.team' },
+  { id: 'kysely', name: 'Kysely', sub: 'Query builder', href: 'https://kysely.dev' },
+  { id: 'typeorm', name: 'TypeORM', sub: 'ORM', href: 'https://typeorm.io' },
+];
+
 /** The rows, in one table, each with what it asks of a tool, shown when its label is hovered. */
 export const compareRows: { id: string; label: string; asks?: string }[] = [
   { id: 'no-codegen', label: 'No codegen', asks: 'Types appear with nothing to generate or commit.' },
@@ -35,14 +43,24 @@ export const compareRows: { id: string; label: string; asks?: string }[] = [
   { id: 'sqlite', label: 'SQLite' },
 ];
 
+/** The rows of the ORM table: a query built in TypeScript has no codegen step of its own to compare, and its nested data is rows nested in a row. */
+export const compareOrmRows = compareRows
+  .filter((r) => r.id !== 'no-codegen')
+  .map((r) => (r.id === 'json-shapes' ? { ...r, asks: 'Rows nested in a row, as a user with their posts, are typed by their shape.' } : r));
+
+/** Which tools and rows a `<CompareTable />` shows: the SQL tools, or `set="orm"`. */
+export const compareSet = (set?: 'orm') => (set === 'orm' ? { tools: compareOrms, rows: compareOrmRows } : { tools: compareTools, rows: compareRows });
+
 export const compareCell = (tool: string, row: string): CompareCell => compareResults.tools[tool]?.cells[row] ?? { state: 'n' };
 
-/** The page's `<CompareTable />` as Markdown, for /compare.md and /llms.txt. */
+/** The page's `<CompareTable />`s as Markdown, for /compare.md and /llms.txt. */
 export function expandCompare(text: string): string {
-  if (!text.includes('<CompareTable />')) return text;
   const word = { y: 'yes', p: 'partly', n: 'no' };
-  const head = `| | Reylo | ${compareTools.map((t) => `[${t.id === 'postgrestypedsql' ? 'Postgres Typed SQL' : t.name}](${t.href})`).join(' | ')} |`;
-  const rule = `| --- | --- | ${compareTools.map(() => '---').join(' | ')} |`;
-  const rows = compareRows.map((r) => `| ${r.label} | ${word[compareCell('reylo', r.id).state]} | ${compareTools.map((t) => word[compareCell(t.id, r.id).state]).join(' | ')} |`);
-  return text.replace('<CompareTable />', [head, rule, ...rows].join('\n'));
+  return text.replace(/<CompareTable(?: set="(orm)")? \/>/g, (_, set?: 'orm') => {
+    const { tools, rows } = compareSet(set);
+    const head = `| | Reylo | ${tools.map((t) => `[${t.id === 'postgrestypedsql' ? 'Postgres Typed SQL' : t.name}](${t.href})`).join(' | ')} |`;
+    const rule = `| --- | --- | ${tools.map(() => '---').join(' | ')} |`;
+    const lines = rows.map((r) => `| ${r.label} | ${word[compareCell('reylo', r.id).state]} | ${tools.map((t) => word[compareCell(t.id, r.id).state]).join(' | ')} |`);
+    return [head, rule, ...lines].join('\n');
+  });
 }

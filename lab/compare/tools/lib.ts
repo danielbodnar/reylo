@@ -8,8 +8,8 @@ import type { Card, Db, Kind, Probe } from "../probes.ts";
 
 // `checksValues`: the tool types no parameter, and checks the value at each call instead; `wrongValuePasses` names a wrong value it let through.
 export interface TypedValue { type: string; kind: Kind; nullable: boolean; fields?: string[]; checksValues?: boolean; wrongValuePasses?: string }
-// `shown`: the parameters and row as the tool writes them in TypeScript, for a tool whose types the docs show whole.
-export interface Answer { ok: boolean; error?: string; params: TypedValue[] | null; columns: (TypedValue & { name: string })[] | null; cardinality: Card | null; shown?: { params: string; row: string } }
+// `shown`: the parameters and row as the tool writes them in TypeScript, for a tool whose types the docs show whole. `code`: the query as an ORM's user writes it. `untyped`: what an ORM types the whole row as, when it reads nothing of the query. `raw`: the ORM's query is its raw SQL, not its typed API.
+export interface Answer { ok: boolean; error?: string; params: TypedValue[] | null; columns: (TypedValue & { name: string })[] | null; cardinality: Card | null; shown?: { params: string; row: string }; code?: string; untyped?: string; raw?: boolean }
 export interface Statement { key: string; probe: Probe; sql: string }
 export interface Urls { postgres: string; mysql: string; sqlite: string }
 export interface Tool {

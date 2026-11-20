@@ -13,7 +13,7 @@ const dead: Urls = { postgres: "postgres://postgres@127.0.0.1:1/none", mysql: "m
 
 const GROUPS: [string, Probe[]][] = [["outer-joins", OUTER_JOINS], ["expressions", EXPRESSIONS], ["parameter-types", PARAMETER_TYPES], ["parameter-nullability", PARAMETER_NULLABILITY], ["cardinality", CARDINALITY], ["json-shapes", JSON_SHAPES], ["json-schema", JSON_SCHEMA], ["from-the-database", FROM_THE_DATABASE], ["smoke", [SMOKE]]];
 
-const toolIds = (process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1].split(",") : ["reylo", "sqlc", "sqlx", "pgtyped", "typedsql", "safeql", "sqlxts", "typesql", "postgrestypedsql"]);
+const toolIds = (process.argv.includes("--only") ? process.argv[process.argv.indexOf("--only") + 1].split(",") : ["reylo", "sqlc", "sqlx", "pgtyped", "typedsql", "safeql", "sqlxts", "typesql", "postgrestypedsql", "prisma", "drizzle", "kysely", "typeorm"]);
 const results: any = existsSync(resolve(here, "results.json")) ? JSON.parse(readFileSync(resolve(here, "results.json"), "utf8")) : { tools: {} };
 // `--report` writes the reports from the results already held, and runs nothing.
 const reportOnly = process.argv.includes("--report");
@@ -88,6 +88,8 @@ writeFileSync(resolve(here, "RESULTS.md"), `${lines.join("\n")}\n`);
 
 // What the docs' table shows of each mark: the clearest query the tool got wrong, with what it answered, the lines that are wrong and Reylo's answer to the same query on the same database; or, where no query shows it, the tool's note.
 const ERROR_WORDS = (p: string) => (/invalid SQL/.test(p) ? "It marks this query as invalid SQL." : "It stops with an error on this query.");
+// An ORM's query that its own type check refuses, or whose rows it leaves untyped.
+const ORM_WORDS = (a: any) => (a.untyped ? `It types each row as ${a.untyped}.` : "Its type check refuses this query.");
 // The queries a reader can judge from the text alone come first, so a popover opens on a mistake that needs no explaining.
 const CLEAREST: Record<string, string[]> = {
   "outer-joins": ["left", "left-where", "left-sorted", "left-subquery", "right", "full"],
@@ -109,8 +111,11 @@ for (const i of ids) {
     const wrong = c.results.filter((r: any) => !r.ok && !r.problems.every((p: string) => p === "it does not infer one"));
     // The clearest query the tool got wrong, with every database it is wrong on.
     // A card marks a line of the answer, so a query whose mistake is on no line of it (a column the tool left out) comes after every other.
-    const drawn = (r: any) => !!r.answer.error || r.at.some((at: any) => (at.cardinality && r.answer.cardinality) || (at.param && r.answer.params?.[at.param - 1]) || (at.column && r.answer.columns?.some((c: any) => c.name.toLowerCase() === at.column.toLowerCase())));
-    const first = [...wrong].sort((x: any, y: any) => Number(drawn(y)) - Number(drawn(x)) || rank(row, x.probe) - rank(row, y.probe))[0];
+    const drawn = (r: any) => !!r.answer.error || !!r.answer.untyped || r.at.some((at: any) => (at.cardinality && r.answer.cardinality) || (at.param && r.answer.params?.[at.param - 1]) || (at.column && r.answer.columns?.some((c: any) => c.name.toLowerCase() === at.column.toLowerCase())));
+    // An ORM's wrong type in its typed API comes first, then an `unknown` from it, then a refusal of its type check, then the raw SQL it leaves untyped.
+    const vague = (r: any) => r.at.length > 0 && r.at.every((at: any) => r.answer.columns?.find((c: any) => c.name.toLowerCase() === String(at.column).toLowerCase())?.kind === "any");
+    const raw = (r: any) => (!r.answer.code ? 0 : r.answer.raw ? 3 : r.answer.error ? 2 : vague(r) ? 1 : 0);
+    const first = [...wrong].sort((x: any, y: any) => Number(drawn(y)) - Number(drawn(x)) || raw(x) - raw(y) || rank(row, x.probe) - rank(row, y.probe))[0];
     let example: any;
     if (first) {
       const same = (r: any) => r.sql === first.sql && r.problems.join() === first.problems.join();
@@ -124,7 +129,9 @@ for (const i of ids) {
       example = {
         sql: first.sql,
         ...(NEEDS_SCHEMA.has(`${row}:${first.probe}`) ? { schema: schemaFor(first.sql) } : {}),
-        ...(a.error ? { error: ERROR_WORDS(first.problems[0]) } : {}),
+        // An ORM's query as its user writes it.
+        ...(a.code ? { code: a.code } : {}),
+        ...(a.code && (a.error || a.untyped) ? { error: ORM_WORDS(a) } : a.error ? { error: ERROR_WORDS(first.problems[0]) } : {}),
         // A tool that checks each value instead of typing the parameter is wrong in what it lets through: "A null passes for $1".
         params: (a.params ?? []).map((v: any, k: number) => {
           const passes = first.problems.filter((_: string, j: number) => first.at[j].param === k + 1).map((p: string) => /^(an? \w+|any) value (passes|is refused) for parameter/.exec(p)).find(Boolean);
