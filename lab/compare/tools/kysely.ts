@@ -56,6 +56,39 @@ const queries: Record<string, Entry> = {
   "json-schema:column": "db.selectFrom('events').select('payload').execute()",
   "json-schema:parameter": "db.insertInto('events').values({ id: $1, payload: $2 }).execute()",
 
+  "aggregates:grouped-count": "db.selectFrom('posts').select((eb) => ['author_id', eb.fn.countAll().as('n')]).groupBy('author_id').execute()",
+  "aggregates:grouped-min": "db.selectFrom('posts').select((eb) => ['author_id', eb.fn.min('title').as('v')]).groupBy('author_id').execute()",
+  "aggregates:having": "db.selectFrom('posts').select((eb) => ['author_id', eb.fn.sum('score').as('v')]).groupBy('author_id').having((eb) => eb.fn.countAll(), '>', 1).execute()",
+  "aggregates:avg": one("eb.fn.avg('score')", "posts"),
+  "aggregates:count-distinct": one("eb.fn.count('author_id').distinct()", "posts"),
+
+  "windows:row-number": "db.selectFrom('posts').select((eb) => ['id', eb.fn.agg('row_number').over((ob) => ob.partitionBy('author_id').orderBy('id')).as('v')]).execute()",
+  "windows:rank": "db.selectFrom('posts').select((eb) => ['id', eb.fn.agg('rank').over((ob) => ob.orderBy('score')).as('v')]).execute()",
+  "windows:running-sum": "db.selectFrom('posts').select((eb) => ['id', eb.fn.sum('score').over((ob) => ob.partitionBy('author_id').orderBy('id')).as('v')]).execute()",
+  "windows:lag": "db.selectFrom('posts').select((eb) => ['id', eb.fn.agg('lag', ['title']).over((ob) => ob.orderBy('id')).as('v')]).execute()",
+
+  "subqueries:scalar-count": "db.selectFrom('users as u').select((eb) => ['u.name', eb.selectFrom('posts as p').select(eb.fn.countAll().as('c')).whereRef('p.author_id', '=', 'u.id').as('v')]).execute()",
+  "subqueries:scalar-max": "db.selectFrom('users as u').select((eb) => ['u.name', eb.selectFrom('posts as p').select((sub) => sub.fn.max('p.title').as('m')).whereRef('p.author_id', '=', 'u.id').as('v')]).execute()",
+  "subqueries:exists": "db.selectFrom('users as u').select((eb) => ['u.name', eb.exists(eb.selectFrom('posts as p').select(eb.lit(1).as('one')).whereRef('p.author_id', '=', 'u.id')).as('v')]).execute()",
+  "subqueries:in": "db.selectFrom('users').select('name').where('id', 'in', db.selectFrom('posts').select('author_id')).execute()",
+  "subqueries:derived": "db.selectFrom(db.selectFrom('posts').select((eb) => ['author_id', eb.fn.countAll().as('n')]).groupBy('author_id').as('x')).select(['x.author_id', 'x.n']).execute()",
+
+  "with-queries:join": "db.with('counts', (db) => db.selectFrom('posts').select((eb) => ['author_id', eb.fn.countAll().as('n')]).groupBy('author_id')).selectFrom('users as u').innerJoin('counts as c', 'c.author_id', 'u.id').select(['u.name', 'c.n']).execute()",
+  "with-queries:left-join": "db.with('counts', (db) => db.selectFrom('posts').select((eb) => ['author_id', eb.fn.countAll().as('n')]).groupBy('author_id')).selectFrom('users as u').leftJoin('counts as c', 'c.author_id', 'u.id').select(['u.name', 'c.n']).execute()",
+  "with-queries:recursive": "db.withRecursive('nums(n)', (db) => db.selectNoFrom((eb) => eb.lit(1).as('n')).unionAll((db) => db.selectFrom('nums').select((eb) => eb('n', '+', 1).as('n')).where('n', '<', 5))).selectFrom('nums').select('n').execute()",
+
+  "set-operations:union": "db.selectFrom('users').select('name as v').union(db.selectFrom('posts').select('title as v')).execute()",
+  "set-operations:union-nullable": "db.selectFrom('users').select('nickname as v').unionAll(db.selectFrom('posts').select('title as v')).execute()",
+  "set-operations:except": "db.selectFrom('users').select('id as v').except(db.selectFrom('posts').select('author_id as v')).execute()",
+
+  "returning:insert": "db.insertInto('posts').values({ id: $1, author_id: $2, title: $3 }).returning(['id', 'score']).execute()",
+  "returning:update": "db.updateTable('users').set({ nickname: $1 }).where('id', '=', $2).returning(['name', 'nickname']).execute()",
+  "returning:delete": "db.deleteFrom('posts').where('id', '=', $1).returning('title').execute()",
+  "returning:upsert": "db.insertInto('users').values({ id: $1, email: $2, name: $3 }).onConflict((oc) => oc.column('id').doUpdateSet((eb) => ({ name: eb.ref('excluded.name') }))).returning(['id', 'nickname']).execute()",
+
+  "enums:column": "db.selectFrom('users').select('role').execute()",
+  "enums:derived": "db.selectFrom(db.selectFrom('users').select('role as r').as('x')).select('x.r').execute()",
+
   "smoke:smoke": "db.selectFrom('users').select(['id', 'name']).execute()",
 };
 
@@ -66,7 +99,7 @@ export const kysely = ormTool({
   dbs: ["postgres", "mysql", "sqlite"],
   cardinalityNote: "Each call picks how many rows it takes: `execute` returns an array, and `executeTakeFirst` at most one row.",
   queries,
-  raw: /eb\.fn\(|eb\.fn\.agg\(/,
+  raw: /eb\.fn\(|eb\.fn\.agg\(|sql`/,
   project(db, urls) {
     const dir = workdir("kysely");
     projectDir(dir);

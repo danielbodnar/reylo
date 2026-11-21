@@ -16,6 +16,7 @@ It needs Homebrew's `postgresql@18` (with the JSON Schema validators) and `mysql
 - A mark is yes when every query on every database the tool supports is right, no when none is, and partly otherwise.
 - It is no as well when a tool gives every expression or parameter the same answer, since that reads nothing from the query, even though the answer is right for some.
 - An ORM's query that its API cannot say is its raw SQL, typed as the ORM leaves it: a row typed `unknown` or `any` is wrong. Its parameters count as typed where the type check refuses a value of the wrong type, as SafeQL's do.
+- Aggregates, window functions, subqueries, WITH queries, set operations, returned rows and enums run for Reylo and the ORMs alone, since only the ORM table shows them. There a column typed `unknown` or `any` is wrong whatever null it admits, and an enum must name its values.
 - A tool's cardinality counts only where the tool works it out. A tool that has the user declare it (`:one`) or pick it per call (`fetch_one`) answers no.
 - No codegen reads `git status` after a run: nothing to commit is yes, a changed source file is partly, new files are no. A tool with a second way that generates nothing, run for real, is partly.
 - Live database runs the tool once with no server to reach, to see whether it needs one, and likewise any setting that has it ask one, which is partly at best, and checks what it says of a function's result and an operator's.

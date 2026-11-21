@@ -1,5 +1,5 @@
 // Turns each tool's answers into the comparison's marks: a mark is computed from what the tool answered and nothing else.
-import { DBS, CARDINALITY, EXPRESSIONS, FROM_THE_DATABASE, FROM_THE_DATABASE_KINDS, JSON_SCHEMA, JSON_SHAPES, OUTER_JOINS, PARAMETER_NULLABILITY, PARAMETER_TYPES, sqlFor, type Db, type Probe } from "./probes.ts";
+import { DBS, ORM_GROUPS, CARDINALITY, EXPRESSIONS, FROM_THE_DATABASE, FROM_THE_DATABASE_KINDS, JSON_SCHEMA, JSON_SHAPES, OUTER_JOINS, PARAMETER_NULLABILITY, PARAMETER_TYPES, sqlFor, type Db, type Probe } from "./probes.ts";
 import type { Answer, TypedValue } from "./tools/lib.ts";
 
 export type State = "y" | "p" | "n";
@@ -34,6 +34,20 @@ function checkParams(p: Probe, a: Answer, db: Db): Problem[] {
     if (want.kinds && !want.kinds.includes(got.kind)) out.push({ text: got.wrongValuePasses ? `${got.wrongValuePasses === "any" ? "any" : `a ${got.wrongValuePasses}`} value passes for parameter ${i + 1}, which takes ${takes}` : `parameter ${i + 1} is typed \`${got.type}\`, but it takes ${takes}`, param });
     if (want.nullable !== undefined && !want.anyNullOn?.includes(db) && got.nullable !== want.nullable) out.push({ text: got.checksValues ? (want.nullable ? `a null value is refused for parameter ${i + 1}, which takes null` : `a null value passes for parameter ${i + 1}, which takes no null`) : `parameter ${i + 1} is typed \`${got.type}\`, but it ${want.nullable ? "takes null" : "takes no null"}`, param });
     if (want.shape && !want.shape.every((f) => got.fields?.includes(f))) out.push({ text: `parameter ${i + 1} is typed \`${got.type}\`, without its fields`, param });
+  });
+  return out;
+}
+// For the query shapes only the ORM table shows: each column typed, with the null it admits, and an enum's every value.
+function checkTyped(p: Probe, a: Answer, db: Db): Problem[] {
+  const out: Problem[] = [];
+  (p.columns ?? []).forEach((want, i) => {
+    const got = a.columns?.find((c) => c.name.toLowerCase() === want.name.toLowerCase()) ?? a.columns?.[i];
+    const column = want.name;
+    if (!got) return void out.push({ text: `\`${want.name}\` is missing`, column });
+    if (got.kind === "any") return void out.push({ text: `\`${want.name}\` is typed \`${got.type}\``, column });
+    if (want.nullable !== undefined && !want.anyNullOn?.includes(db) && got.nullable !== want.nullable) out.push({ text: `\`${want.name}\` is typed \`${got.type}\`, but ${want.nullable ? "it can be null" : "it is never null"}`, column });
+    const named = (l: string) => got.labels?.includes(l) || new RegExp(`["']${l}["']`).test(got.type);
+    if (want.labels && !want.labels.every(named)) out.push({ text: `\`${want.name}\` is typed \`${got.type}\`, without its values`, column });
   });
   return out;
 }
@@ -99,6 +113,11 @@ export function gradeTool(answers: Answers, dbs: Db[], facts: { wrote: string[];
 
   const schema = run(answers, dbs.includes("postgres") ? ["postgres"] : [], "json-schema", JSON_SCHEMA, (p, a, db) => [...checkColumns(p, a, false, db), ...checkParams(p, a, db)]);
   cells["json-schema"] = cell(schema);
+
+  for (const [group, probes] of ORM_GROUPS) {
+    const results = run(answers, dbs, group, probes, checkTyped);
+    if (results.length) cells[group] = cell(results);
+  }
 
   for (const db of DBS) {
     const a = answers[`${db}:smoke:smoke`];

@@ -14,7 +14,7 @@ export class User {
   @Column({ unique: true }) email!: string;
   @Column() name!: string;
   @Column({ type: "text", nullable: true }) nickname!: string | null;
-${db === "postgres" ? `  @Column({ name: "external_id", type: "uuid", nullable: true }) externalId!: string | null;\n` : ""}  @OneToMany(() => Post, (post) => post.author) posts!: Post[];
+${db === "postgres" ? `  @Column({ name: "external_id", type: "uuid", nullable: true }) externalId!: string | null;\n` : ""}${db === "sqlite" ? "" : `  @Column({ type: "enum", enum: ["admin", "member"], default: "member" }) role!: "admin" | "member";\n`}  @OneToMany(() => Post, (post) => post.author) posts!: Post[];
 }
 
 @Entity("posts")
@@ -89,6 +89,41 @@ const queries: Record<string, Entry> = {
   "json-schema:column": `ds.getRepository(Event).find({ select: { payload: true } })`,
   "json-schema:parameter": `ds.getRepository(Event).insert({ id: $1, payload: $2 })`,
 
+  // TypeORM's typed `find` has no grouping or aggregate but `count`, `sum`, `maximum` and their kin over a whole table: a grouped query is the query builder's `getRawMany()`.
+  "aggregates:grouped-count": `${posts}.createQueryBuilder('p').select('p.author_id', 'author_id').addSelect('count(*)', 'n').groupBy('p.author_id').getRawMany()`,
+  "aggregates:grouped-min": `${posts}.createQueryBuilder('p').select('p.author_id', 'author_id').addSelect('min(p.title)', 'v').groupBy('p.author_id').getRawMany()`,
+  "aggregates:having": `${posts}.createQueryBuilder('p').select('p.author_id', 'author_id').addSelect('sum(p.score)', 'v').groupBy('p.author_id').having('count(*) > 1').getRawMany()`,
+  "aggregates:avg": { code: `${posts}.average('score')`, value: true },
+  "aggregates:count-distinct": `${posts}.createQueryBuilder('p').select('count(distinct p.author_id)', 'v').getRawMany()`,
+
+  "windows:row-number": raw,
+  "windows:rank": raw,
+  "windows:running-sum": raw,
+  "windows:lag": raw,
+
+  "subqueries:scalar-count": `${users}.createQueryBuilder('u').select('u.name', 'name').addSelect((qb) => qb.select('count(*)').from(Post, 'p').where('p.author_id = u.id'), 'v').getRawMany()`,
+  "subqueries:scalar-max": `${users}.createQueryBuilder('u').select('u.name', 'name').addSelect((qb) => qb.select('max(p.title)').from(Post, 'p').where('p.author_id = u.id'), 'v').getRawMany()`,
+  "subqueries:exists": raw,
+  "subqueries:in": `${users}.createQueryBuilder('u').select(['u.name']).where((qb) => 'u.id in ' + qb.subQuery().select('p.author_id').from(Post, 'p').getQuery()).getMany()`,
+  "subqueries:derived": `ds.createQueryBuilder().select(['x.author_id', 'x.n']).from((qb) => qb.select('p.author_id', 'author_id').addSelect('count(*)', 'n').from(Post, 'p').groupBy('p.author_id'), 'x').getRawMany()`,
+
+  "with-queries:join": raw,
+  "with-queries:left-join": raw,
+  "with-queries:recursive": raw,
+
+  "set-operations:union": raw,
+  "set-operations:union-nullable": raw,
+  "set-operations:except": raw,
+
+  // \`save\` inserts or updates by primary key and returns the entity, which is TypeORM's way to get a written row back.
+  "returning:insert": `${posts}.save({ id: $1, authorId: $2, title: $3 })`,
+  "returning:update": `${users}.save({ id: $2, nickname: $1 })`,
+  "returning:delete": { code: `ds.createQueryBuilder().delete().from(Post).where('id = :id', { id: $1 }).returning(['title']).execute()`, paths: { title: "raw" } },
+  "returning:upsert": `${users}.save({ id: $1, email: $2, name: $3 })`,
+
+  "enums:column": `${users}.find({ select: { role: true } })`,
+  "enums:derived": raw,
+
   "smoke:smoke": `${users}.find({ select: { id: true, name: true } })`,
 };
 
@@ -99,7 +134,7 @@ export const typeorm = ormTool({
   dbs: ["postgres", "mysql", "sqlite"],
   cardinalityNote: "Each call picks how many rows it takes: `find` returns an array, and `findOne` at most one row.",
   queries,
-  raw: /ds\.query\(|getRaw/,
+  raw: /ds\.query\(|getRaw|returning\(/,
   compilerOptions: { experimentalDecorators: true },
   project(db) {
     const dir = workdir("typeorm");

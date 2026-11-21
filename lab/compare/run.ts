@@ -1,7 +1,7 @@
 // Runs every tool on every probe it can take and writes results.json and RESULTS.md. `--only <id>` runs one tool, and merges it into the existing results.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { ALL_PROBES, CARDINALITY, EXPRESSIONS, FROM_THE_DATABASE, JSON_SCHEMA, JSON_SHAPES, OUTER_JOINS, PARAMETER_NULLABILITY, PARAMETER_TYPES, SMOKE, sqlFor, type Probe } from "./probes.ts";
+import { ALL_PROBES, ORM_GROUPS, CARDINALITY, EXPRESSIONS, FROM_THE_DATABASE, JSON_SCHEMA, JSON_SHAPES, OUTER_JOINS, PARAMETER_NULLABILITY, PARAMETER_TYPES, SMOKE, sqlFor, type Probe } from "./probes.ts";
 import { gradeTool } from "./grade.ts";
 import type { Answer, Statement, Tool, Urls } from "./tools/lib.ts";
 
@@ -24,7 +24,8 @@ for (const id of reportOnly ? [] : toolIds) {
   let wrote: string[] = [];
   const t0 = Date.now();
   for (const db of tool.dbs) {
-    const statements: Statement[] = GROUPS.flatMap(([group, probes]) => probes.flatMap((probe) => { const sql = sqlFor(probe, db); return sql ? [{ key: `${db}:${group}:${probe.id}`, probe, sql }] : []; }));
+    const groups = tool.orm || tool.id === "reylo" ? [...GROUPS, ...ORM_GROUPS] : GROUPS;
+    const statements: Statement[] = groups.flatMap(([group, probes]) => probes.flatMap((probe) => { const sql = sqlFor(probe, db); return sql ? [{ key: `${db}:${group}:${probe.id}`, probe, sql }] : []; }));
     const r = await tool.analyze(db, statements, urls);
     Object.assign(answers, r.answers);
     if (db === tool.dbs[0]) wrote = r.wrote;
@@ -54,7 +55,7 @@ for (const id of reportOnly ? [] : toolIds) {
 
 // RESULTS.md: the grid, then every query a tool got wrong and what it answered.
 const MARK = { y: "yes", p: "partly", n: "no" };
-const ROW_LABELS: Record<string, string> = { "no-codegen": "No codegen", "from-the-database": "Live database", "outer-joins": "Nullable left joins", "expression-nullability": "Nullable expressions", "parameter-types": "Parameter types", "parameter-nullability": "Nullable parameters", cardinality: "Cardinality", "json-shapes": "Nested JSON", "json-schema": "JSON Schema types", postgres: "Postgres", mysql: "MySQL", sqlite: "SQLite" };
+const ROW_LABELS: Record<string, string> = { "no-codegen": "No codegen", "from-the-database": "Live database", "outer-joins": "Nullable left joins", "expression-nullability": "Nullable expressions", "parameter-types": "Parameter types", "parameter-nullability": "Nullable parameters", cardinality: "Cardinality", "json-shapes": "Nested JSON", "json-schema": "JSON Schema types", aggregates: "Aggregates", windows: "Window functions", subqueries: "Subqueries", "with-queries": "WITH queries", "set-operations": "Set operations", returning: "Returning rows", enums: "Enums", postgres: "Postgres", mysql: "MySQL", sqlite: "SQLite" };
 const ids = Object.keys(results.tools);
 const lines = [`# Results`, ``, `Written by \`./run.sh\` on ${results.at.slice(0, 10)}. Each mark comes from what the tool answered; [probes.ts](probes.ts) holds the queries and the right answers, and [grade.ts](grade.ts) the rules.`, ``, `| | ${ids.map((i) => results.tools[i].name).join(" | ")} |`, `| --- | ${ids.map(() => "---").join(" | ")} |`, `| Version | ${ids.map((i) => results.tools[i].version).join(" | ")} |`];
 for (const [row, label] of Object.entries(ROW_LABELS)) lines.push(`| ${label} | ${ids.map((i) => { const c = results.tools[i].cells[row]; return c ? `${MARK[c.state as "y"]}${c.total > 1 ? ` (${c.right}/${c.total})` : ""}` : "no"; }).join(" | ")} |`);
@@ -72,7 +73,7 @@ for (const i of ids) {
 const DB_NAME: Record<string, string> = { postgres: "Postgres", mysql: "MySQL", sqlite: "SQLite" };
 const CARD = { one: "exactly one row", maybeOne: "at most one row", many: "many rows", none: "no rows" };
 lines.push(``, `## The queries`, ``, `Every tool gets each query on each database it supports. [probes.ts](probes.ts) holds them with their right answers.`);
-for (const [group, probes] of GROUPS) {
+for (const [group, probes] of [...GROUPS, ...ORM_GROUPS]) {
   if (group === "smoke") continue;
   lines.push(``, `**${group}**`, ``);
   for (const p of probes) {
@@ -100,9 +101,9 @@ const CLEAREST: Record<string, string[]> = {
 };
 const rank = (row: string, probe: string) => { const at = CLEAREST[row]?.indexOf(probe) ?? -1; return at < 0 ? CLEAREST[row]?.length ?? 0 : at; };
 // A mistake only the schema shows carries the statements that define what the query names.
-const NEEDS_SCHEMA = new Set(["json-schema:column", "json-schema:parameter", "from-the-database:function", "parameter-types:uuid", "parameter-types:timestamp", "parameter-types:insert"]);
-const schemaStatements = readFileSync(resolve(here, "schema/postgres.sql"), "utf8").split(/;\n/).map((s) => s.trim()).filter((s) => /^create (table|function)/.test(s));
-const schemaFor = (sql: string) => schemaStatements.filter((s) => new RegExp(`\\b${/^create (?:table|function) (\w+)/.exec(s)![1]}\\b`).test(sql)).map((s) => `${s};`).join("\n");
+const NEEDS_SCHEMA = new Set(["enums:column", "enums:derived", "json-schema:column", "json-schema:parameter", "from-the-database:function", "parameter-types:uuid", "parameter-types:timestamp", "parameter-types:insert"]);
+const schemaStatements = readFileSync(resolve(here, "schema/postgres.sql"), "utf8").split(/;\n/).map((s) => s.trim()).filter((s) => /^create (table|function|type)/.test(s));
+const schemaFor = (sql: string) => { const named = schemaStatements.filter((s) => new RegExp(`\\b${/^create (?:table|function|type) (\w+)/.exec(s)![1]}\\b`).test(sql)); const types = schemaStatements.filter((s) => s.startsWith("create type") && named.some((n) => new RegExp(`\\b${/^create type (\w+)/.exec(s)![1]}\\b`).test(n))); return [...new Set([...types, ...named])].map((s) => `${s};`).join("\n"); };
 const site: any = { at: results.at, tools: {} };
 for (const i of ids) {
   const t = results.tools[i];

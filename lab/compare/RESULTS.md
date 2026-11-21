@@ -1,6 +1,6 @@
 # Results
 
-Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered; [probes.ts](probes.ts) holds the queries and the right answers, and [grade.ts](grade.ts) the rules.
+Written by `./run.sh` on 2026-11-21. Each mark comes from what the tool answered; [probes.ts](probes.ts) holds the queries and the right answers, and [grade.ts](grade.ts) the rules.
 
 | | Reylo | sqlc | PgTyped | TypedSQL | sqlx-ts | SafeQL | sqlx | TypeSQL | Postgres Typed SQL | Drizzle | Kysely | Prisma | TypeORM |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -14,6 +14,13 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 | Cardinality | yes (28/28) | no (0/28) | no (0/10) | no (0/28) | no (0/28) | no (0/10) | no (0/28) | partly (16/28) | partly (9/10) | no (0/28) | no (0/28) | no (0/28) | no (0/28) |
 | Nested JSON | yes (6/6) | no (0/6) | no (0/2) | no (0/6) | partly (5/6) | yes (2/2) | no (0/6) | partly (2/6) | yes (2/2) | yes (6/6) | yes (6/6) | yes (6/6) | yes (6/6) |
 | JSON Schema types | yes (2/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) | no (0/2) |
+| Aggregates | yes (15/15) | no | no | no | no | no | no | no | no | partly (12/15) | partly (9/15) | partly (9/15) | no (0/15) |
+| Window functions | yes (12/12) | no | no | no | no | no | no | no | no | no (0/12) | no (0/12) | no (0/12) | no (0/12) |
+| Subqueries | yes (15/15) | no | no | no | no | no | no | no | no | partly (9/15) | partly (12/15) | partly (6/15) | partly (3/15) |
+| WITH queries | partly (8/9) | no | no | no | no | no | no | no | no | partly (3/9) | yes (9/9) | no (0/9) | no (0/9) |
+| Set operations | yes (9/9) | no | no | no | no | no | no | no | no | yes (9/9) | partly (8/9) | no (0/9) | no (0/9) |
+| Returning rows | yes (8/8) | no | no | no | no | no | no | no | no | yes (8/8) | partly (6/8) | yes (8/8) | partly (6/8) |
+| Enums | partly (2/4) | no | no | no | no | no | no | no | no | yes (4/4) | yes (4/4) | partly (2/4) | partly (2/4) |
 | Postgres | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | MySQL | yes | yes | no | yes | yes | no | yes | yes | no | yes | yes | yes | yes |
 | SQLite | yes | yes | no | yes | yes | no | yes | yes | no | yes | yes | yes | yes |
@@ -21,6 +28,15 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 ## Reylo 0.7.0
 
 **No codegen**: yes. Nothing to commit after a run.
+
+**WITH queries**: partly, 8 of 9
+
+- mysql: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: `n` is typed `int8|int4 | null`, but it is never null
+
+**Enums**: partly, 2 of 4
+
+- mysql: `select role from users`: `role` is typed `text`, without its values
+- mysql: `select x.r from (select role as r from users) x`: `r` is typed `text`, without its values
 
 ## sqlc v1.31.1
 
@@ -600,7 +616,7 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 
 ## Drizzle 0.45.4
 
-**No codegen**: no. A run leaves new files to commit: `db/0000_hot_dexter_bennett.sql`, `db/meta/0000_snapshot.json`, `db/meta/_journal.json`.
+**No codegen**: no. A run leaves new files to commit: `db/0000_worried_adam_warlock.sql`, `db/meta/0000_snapshot.json`, `db/meta/_journal.json`.
 
 **Live database**: no. It types each query from the schema kept in your code, and never asks the database.
 
@@ -667,6 +683,45 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 
 - postgres: `select payload from events`: `payload` is typed `unknown`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `{ x: number }`, without its fields
+
+**Aggregates**: partly, 12 of 15
+
+- postgres: `select author_id, min(title) as v from posts group by author_id`: `v` is typed `string | null`, but it is never null
+- mysql: `select author_id, min(title) as v from posts group by author_id`: `v` is typed `string | null`, but it is never null
+- sqlite: `select author_id, min(title) as v from posts group by author_id`: `v` is typed `string | null`, but it is never null
+
+**Window functions**: no, 0 of 12
+
+- postgres: `select id, row_number() over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- postgres: `select id, rank() over (order by score) as v from posts`: `v` is typed `unknown`
+- postgres: `select id, sum(score) over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- postgres: `select id, lag(title) over (order by id) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, row_number() over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, rank() over (order by score) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, sum(score) over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, lag(title) over (order by id) as v from posts`: `v` is typed `unknown`
+- sqlite: `select id, row_number() over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- sqlite: `select id, rank() over (order by score) as v from posts`: `v` is typed `unknown`
+- sqlite: `select id, sum(score) over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- sqlite: `select id, lag(title) over (order by id) as v from posts`: `v` is typed `unknown`
+
+**Subqueries**: partly, 9 of 15
+
+- postgres: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: `v` is typed `unknown`
+- postgres: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: `v` is typed `unknown`
+- mysql: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: `v` is typed `unknown`
+- mysql: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: `v` is typed `unknown`
+- sqlite: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: `v` is typed `unknown`
+- sqlite: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: `v` is typed `unknown`
+
+**WITH queries**: partly, 3 of 9
+
+- postgres: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: `n` is typed `number`, but it can be null
+- postgres: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: `n` is typed `unknown`
+- mysql: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: `n` is typed `number`, but it can be null
+- mysql: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: `n` is typed `unknown`
+- sqlite: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: `n` is typed `number`, but it can be null
+- sqlite: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: `n` is typed `unknown`
 
 ## Kysely 0.29.9
 
@@ -741,6 +796,45 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 
 - postgres: `select payload from events`: `payload` is typed `JsonArray | JsonObject | JsonPrimitive`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `{ x: number }`, without its fields
+
+**Aggregates**: partly, 9 of 15
+
+- postgres: `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`: `v` is typed `string | number | bigint`, but it can be null
+- postgres: `select avg(score) as v from posts`: `v` is typed `string | number`, but it can be null
+- mysql: `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`: `v` is typed `string | number | bigint`, but it can be null
+- mysql: `select avg(score) as v from posts`: `v` is typed `string | number`, but it can be null
+- sqlite: `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`: `v` is typed `string | number | bigint`, but it can be null
+- sqlite: `select avg(score) as v from posts`: `v` is typed `string | number`, but it can be null
+
+**Window functions**: no, 0 of 12
+
+- postgres: `select id, row_number() over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- postgres: `select id, rank() over (order by score) as v from posts`: `v` is typed `unknown`
+- postgres: `select id, sum(score) over (partition by author_id order by id) as v from posts`: `v` is typed `string | number | bigint`, but it can be null
+- postgres: `select id, lag(title) over (order by id) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, row_number() over (partition by author_id order by id) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, rank() over (order by score) as v from posts`: `v` is typed `unknown`
+- mysql: `select id, sum(score) over (partition by author_id order by id) as v from posts`: `v` is typed `string | number | bigint`, but it can be null
+- mysql: `select id, lag(title) over (order by id) as v from posts`: `v` is typed `unknown`
+- sqlite: `select id, row_number() over (partition by author_id order by id) as v from posts`: `id` is typed `number | null`, but it is never null; `v` is typed `unknown`
+- sqlite: `select id, rank() over (order by score) as v from posts`: `id` is typed `number | null`, but it is never null; `v` is typed `unknown`
+- sqlite: `select id, sum(score) over (partition by author_id order by id) as v from posts`: `id` is typed `number | null`, but it is never null; `v` is typed `string | number | bigint`, but it can be null
+- sqlite: `select id, lag(title) over (order by id) as v from posts`: `id` is typed `number | null`, but it is never null; `v` is typed `unknown`
+
+**Subqueries**: partly, 12 of 15
+
+- postgres: `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`: `v` is typed `string | number | bigint | null`, but it is never null
+- mysql: `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`: `v` is typed `string | number | bigint | null`, but it is never null
+- sqlite: `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`: `v` is typed `string | number | bigint | null`, but it is never null
+
+**Set operations**: partly, 8 of 9
+
+- sqlite: `select id as v from users except select author_id from posts`: `v` is typed `number | null`, but it is never null
+
+**Returning rows**: partly, 6 of 8
+
+- sqlite: `insert into posts (id, author_id, title) values ($1, $2, $3) returning id, score`: `id` is typed `number | null`, but it is never null
+- sqlite: `insert into users (id, email, name) values ($1, $2, $3) on conflict (id) do update set name = excluded.name returning id, nickname`: `id` is typed `number | null`, but it is never null
 
 ## Prisma 7.10.1
 
@@ -854,6 +948,71 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 
 - postgres: `select payload from events`: `payload` is typed `string | number | boolean | JsonObject | JsonArray | null`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `{ x: number }`, without its fields
+
+**Aggregates**: partly, 9 of 15
+
+- postgres: `select author_id, min(title) as v from posts group by author_id`: `v` is typed `string | null`, but it is never null
+- postgres: `select count(distinct author_id) as v from posts`: it types each row as `unknown`
+- mysql: `select author_id, min(title) as v from posts group by author_id`: `v` is typed `string | null`, but it is never null
+- mysql: `select count(distinct author_id) as v from posts`: it types each row as `unknown`
+- sqlite: `select author_id, min(title) as v from posts group by author_id`: `v` is typed `string | null`, but it is never null
+- sqlite: `select count(distinct author_id) as v from posts`: it types each row as `unknown`
+
+**Window functions**: no, 0 of 12
+
+- postgres: `select id, row_number() over (partition by author_id order by id) as v from posts`: it types each row as `unknown`
+- postgres: `select id, rank() over (order by score) as v from posts`: it types each row as `unknown`
+- postgres: `select id, sum(score) over (partition by author_id order by id) as v from posts`: it types each row as `unknown`
+- postgres: `select id, lag(title) over (order by id) as v from posts`: it types each row as `unknown`
+- mysql: `select id, row_number() over (partition by author_id order by id) as v from posts`: it types each row as `unknown`
+- mysql: `select id, rank() over (order by score) as v from posts`: it types each row as `unknown`
+- mysql: `select id, sum(score) over (partition by author_id order by id) as v from posts`: it types each row as `unknown`
+- mysql: `select id, lag(title) over (order by id) as v from posts`: it types each row as `unknown`
+- sqlite: `select id, row_number() over (partition by author_id order by id) as v from posts`: it types each row as `unknown`
+- sqlite: `select id, rank() over (order by score) as v from posts`: it types each row as `unknown`
+- sqlite: `select id, sum(score) over (partition by author_id order by id) as v from posts`: it types each row as `unknown`
+- sqlite: `select id, lag(title) over (order by id) as v from posts`: it types each row as `unknown`
+
+**Subqueries**: partly, 6 of 15
+
+- postgres: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: it types each row as `unknown`
+- postgres: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: it types each row as `unknown`
+- postgres: `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`: it types each row as `unknown`
+- mysql: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: it types each row as `unknown`
+- mysql: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: it types each row as `unknown`
+- mysql: `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`: it types each row as `unknown`
+- sqlite: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: it types each row as `unknown`
+- sqlite: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: it types each row as `unknown`
+- sqlite: `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`: it types each row as `unknown`
+
+**WITH queries**: no, 0 of 9
+
+- postgres: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`: it types each row as `unknown`
+- postgres: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: it types each row as `unknown`
+- postgres: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: it types each row as `unknown`
+- mysql: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`: it types each row as `unknown`
+- mysql: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: it types each row as `unknown`
+- mysql: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: it types each row as `unknown`
+- sqlite: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`: it types each row as `unknown`
+- sqlite: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: it types each row as `unknown`
+- sqlite: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: it types each row as `unknown`
+
+**Set operations**: no, 0 of 9
+
+- postgres: `select name as v from users union select title from posts`: it types each row as `unknown`
+- postgres: `select nickname as v from users union all select title from posts`: it types each row as `unknown`
+- postgres: `select id as v from users except select author_id from posts`: it types each row as `unknown`
+- mysql: `select name as v from users union select title from posts`: it types each row as `unknown`
+- mysql: `select nickname as v from users union all select title from posts`: it types each row as `unknown`
+- mysql: `select id as v from users except select author_id from posts`: it types each row as `unknown`
+- sqlite: `select name as v from users union select title from posts`: it types each row as `unknown`
+- sqlite: `select nickname as v from users union all select title from posts`: it types each row as `unknown`
+- sqlite: `select id as v from users except select author_id from posts`: it types each row as `unknown`
+
+**Enums**: partly, 2 of 4
+
+- postgres: `select x.r from (select role as r from users) x`: it types each row as `unknown`
+- mysql: `select x.r from (select role as r from users) x`: it types each row as `unknown`
 
 ## TypeORM 1.1.3
 
@@ -971,6 +1130,88 @@ Written by `./run.sh` on 2026-11-20. Each mark comes from what the tool answered
 - postgres: `select payload from events`: `payload` is typed `object`, without its fields
 - postgres: `insert into events (id, payload) values ($1, $2)`: parameter 2 is typed `{ x: number }`, without its fields
 
+**Aggregates**: no, 0 of 15
+
+- postgres: `select author_id, count(*) as n from posts group by author_id`: it types each row as `any`
+- postgres: `select author_id, min(title) as v from posts group by author_id`: it types each row as `any`
+- postgres: `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`: it types each row as `any`
+- postgres: `select avg(score) as v from posts`: it reports an error: Argument of type '"score"' is not assignable to parameter of type 'PickKeysByType<Post, number>'.
+- postgres: `select count(distinct author_id) as v from posts`: it types each row as `any`
+- mysql: `select author_id, count(*) as n from posts group by author_id`: it types each row as `any`
+- mysql: `select author_id, min(title) as v from posts group by author_id`: it types each row as `any`
+- mysql: `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`: it types each row as `any`
+- mysql: `select avg(score) as v from posts`: it reports an error: Argument of type '"score"' is not assignable to parameter of type 'PickKeysByType<Post, number>'.
+- mysql: `select count(distinct author_id) as v from posts`: it types each row as `any`
+- sqlite: `select author_id, count(*) as n from posts group by author_id`: it types each row as `any`
+- sqlite: `select author_id, min(title) as v from posts group by author_id`: it types each row as `any`
+- sqlite: `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`: it types each row as `any`
+- sqlite: `select avg(score) as v from posts`: it reports an error: Argument of type '"score"' is not assignable to parameter of type 'PickKeysByType<Post, number>'.
+- sqlite: `select count(distinct author_id) as v from posts`: it types each row as `any`
+
+**Window functions**: no, 0 of 12
+
+- postgres: `select id, row_number() over (partition by author_id order by id) as v from posts`: it types each row as `any`
+- postgres: `select id, rank() over (order by score) as v from posts`: it types each row as `any`
+- postgres: `select id, sum(score) over (partition by author_id order by id) as v from posts`: it types each row as `any`
+- postgres: `select id, lag(title) over (order by id) as v from posts`: it types each row as `any`
+- mysql: `select id, row_number() over (partition by author_id order by id) as v from posts`: it types each row as `any`
+- mysql: `select id, rank() over (order by score) as v from posts`: it types each row as `any`
+- mysql: `select id, sum(score) over (partition by author_id order by id) as v from posts`: it types each row as `any`
+- mysql: `select id, lag(title) over (order by id) as v from posts`: it types each row as `any`
+- sqlite: `select id, row_number() over (partition by author_id order by id) as v from posts`: it types each row as `any`
+- sqlite: `select id, rank() over (order by score) as v from posts`: it types each row as `any`
+- sqlite: `select id, sum(score) over (partition by author_id order by id) as v from posts`: it types each row as `any`
+- sqlite: `select id, lag(title) over (order by id) as v from posts`: it types each row as `any`
+
+**Subqueries**: partly, 3 of 15
+
+- postgres: `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- postgres: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- postgres: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- postgres: `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`: it types each row as `any`
+- mysql: `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- mysql: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- mysql: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- mysql: `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`: it types each row as `any`
+- sqlite: `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- sqlite: `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- sqlite: `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`: it types each row as `any`
+- sqlite: `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`: it types each row as `any`
+
+**WITH queries**: no, 0 of 9
+
+- postgres: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`: it types each row as `any`
+- postgres: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: it types each row as `any`
+- postgres: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: it types each row as `any`
+- mysql: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`: it types each row as `any`
+- mysql: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: it types each row as `any`
+- mysql: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: it types each row as `any`
+- sqlite: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`: it types each row as `any`
+- sqlite: `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`: it types each row as `any`
+- sqlite: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: it types each row as `any`
+
+**Set operations**: no, 0 of 9
+
+- postgres: `select name as v from users union select title from posts`: it types each row as `any`
+- postgres: `select nickname as v from users union all select title from posts`: it types each row as `any`
+- postgres: `select id as v from users except select author_id from posts`: it types each row as `any`
+- mysql: `select name as v from users union select title from posts`: it types each row as `any`
+- mysql: `select nickname as v from users union all select title from posts`: it types each row as `any`
+- mysql: `select id as v from users except select author_id from posts`: it types each row as `any`
+- sqlite: `select name as v from users union select title from posts`: it types each row as `any`
+- sqlite: `select nickname as v from users union all select title from posts`: it types each row as `any`
+- sqlite: `select id as v from users except select author_id from posts`: it types each row as `any`
+
+**Returning rows**: partly, 6 of 8
+
+- postgres: `delete from posts where id = $1 returning title`: `title` is typed `any`
+- sqlite: `delete from posts where id = $1 returning title`: `title` is typed `any`
+
+**Enums**: partly, 2 of 4
+
+- postgres: `select x.r from (select role as r from users) x`: it types each row as `any`
+- mysql: `select x.r from (select role as r from users) x`: it types each row as `any`
+
 ## The queries
 
 Every tool gets each query on each database it supports. [probes.ts](probes.ts) holds them with their right answers.
@@ -1056,3 +1297,50 @@ Every tool gets each query on each database it supports. [probes.ts](probes.ts) 
 - `select add_one(id) as v from users` (Postgres)
 - `select id::numeric / 2 as v from users` (Postgres)
 - `select array_agg(id) as v from users` (Postgres)
+
+**aggregates**
+
+- `select author_id, count(*) as n from posts group by author_id`
+- `select author_id, min(title) as v from posts group by author_id`
+- `select author_id, sum(score) as v from posts group by author_id having count(*) > 1`
+- `select avg(score) as v from posts`
+- `select count(distinct author_id) as v from posts`
+
+**windows**
+
+- `select id, row_number() over (partition by author_id order by id) as v from posts`
+- `select id, rank() over (order by score) as v from posts`
+- `select id, sum(score) over (partition by author_id order by id) as v from posts`
+- `select id, lag(title) over (order by id) as v from posts`
+
+**subqueries**
+
+- `select u.name, (select count(*) from posts p where p.author_id = u.id) as v from users u`
+- `select u.name, (select max(p.title) from posts p where p.author_id = u.id) as v from users u`
+- `select u.name, exists (select 1 from posts p where p.author_id = u.id) as v from users u`
+- `select name from users where id in (select author_id from posts)`
+- `select x.author_id, x.n from (select author_id, count(*) as n from posts group by author_id) x`
+
+**with-queries**
+
+- `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u join counts c on c.author_id = u.id`
+- `with counts as (select author_id, count(*) as n from posts group by author_id) select u.name, c.n from users u left join counts c on c.author_id = u.id`
+- `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`
+
+**set-operations**
+
+- `select name as v from users union select title from posts`
+- `select nickname as v from users union all select title from posts`
+- `select id as v from users except select author_id from posts`
+
+**returning**
+
+- `insert into posts (id, author_id, title) values ($1, $2, $3) returning id, score` (Postgres and SQLite)
+- `update users set nickname = $1 where id = $2 returning name, nickname` (Postgres and SQLite)
+- `delete from posts where id = $1 returning title` (Postgres and SQLite)
+- `insert into users (id, email, name) values ($1, $2, $3) on conflict (id) do update set name = excluded.name returning id, nickname` (Postgres and SQLite)
+
+**enums**
+
+- `select role from users` (Postgres and MySQL)
+- `select x.r from (select role as r from users) x` (Postgres and MySQL)

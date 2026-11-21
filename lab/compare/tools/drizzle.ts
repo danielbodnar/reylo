@@ -58,6 +58,41 @@ const queries: Record<string, Entry> = {
   "json-schema:column": "db.select({ payload: events.payload }).from(events)",
   "json-schema:parameter": "db.insert(events).values({ id: $1, payload: $2 })",
 
+  "aggregates:grouped-count": "db.select({ author_id: posts.authorId, n: count() }).from(posts).groupBy(posts.authorId)",
+  "aggregates:grouped-min": "db.select({ author_id: posts.authorId, v: min(posts.title) }).from(posts).groupBy(posts.authorId)",
+  "aggregates:having": "db.select({ author_id: posts.authorId, v: sum(posts.score) }).from(posts).groupBy(posts.authorId).having(gt(count(), 1))",
+  "aggregates:avg": "db.select({ v: avg(posts.score) }).from(posts)",
+  "aggregates:count-distinct": "db.select({ v: countDistinct(posts.authorId) }).from(posts)",
+
+  // Drizzle has no window functions: each is its `sql` fragment.
+  "windows:row-number": "db.select({ id: posts.id, v: sql`row_number() over (partition by ${posts.authorId} order by ${posts.id})` }).from(posts)",
+  "windows:rank": "db.select({ id: posts.id, v: sql`rank() over (order by ${posts.score})` }).from(posts)",
+  "windows:running-sum": "db.select({ id: posts.id, v: sql`sum(${posts.score}) over (partition by ${posts.authorId} order by ${posts.id})` }).from(posts)",
+  "windows:lag": "db.select({ id: posts.id, v: sql`lag(${posts.title}) over (order by ${posts.id})` }).from(posts)",
+
+  "subqueries:scalar-count": "db.select({ name: users.name, v: db.$count(posts, eq(posts.authorId, users.id)) }).from(users)",
+  "subqueries:scalar-max": "db.select({ name: users.name, v: sql`(select max(${posts.title}) from ${posts} where ${posts.authorId} = ${users.id})` }).from(users)",
+  "subqueries:exists": "db.select({ name: users.name, v: exists(db.select({ one: sql`1` }).from(posts).where(eq(posts.authorId, users.id))) }).from(users)",
+  "subqueries:in": "db.select({ name: users.name }).from(users).where(inArray(users.id, db.select({ id: posts.authorId }).from(posts)))",
+  "subqueries:derived": "{ const x = db.select({ author_id: posts.authorId, n: count().as('n') }).from(posts).groupBy(posts.authorId).as('x'); return db.select({ author_id: x.author_id, n: x.n }).from(x); }",
+
+  "with-queries:join": "{ const counts = db.$with('counts').as(db.select({ authorId: posts.authorId, n: count().as('n') }).from(posts).groupBy(posts.authorId)); return db.with(counts).select({ name: users.name, n: counts.n }).from(users).innerJoin(counts, eq(counts.authorId, users.id)); }",
+  "with-queries:left-join": "{ const counts = db.$with('counts').as(db.select({ authorId: posts.authorId, n: count().as('n') }).from(posts).groupBy(posts.authorId)); return db.with(counts).select({ name: users.name, n: counts.n }).from(users).leftJoin(counts, eq(counts.authorId, users.id)); }",
+  // Drizzle has no recursive WITH: the query is its `sql` fragment.
+  "with-queries:recursive": "db.select({ n: sql`n` }).from(sql`(with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums) as nums`)",
+
+  "set-operations:union": "db.select({ v: users.name }).from(users).union(db.select({ v: posts.title }).from(posts))",
+  "set-operations:union-nullable": "db.select({ v: users.nickname }).from(users).unionAll(db.select({ v: posts.title }).from(posts))",
+  "set-operations:except": "db.select({ v: users.id }).from(users).except(db.select({ v: posts.authorId }).from(posts))",
+
+  "returning:insert": "db.insert(posts).values({ id: $1, authorId: $2, title: $3 }).returning({ id: posts.id, score: posts.score })",
+  "returning:update": "db.update(users).set({ nickname: $1 }).where(eq(users.id, $2)).returning({ name: users.name, nickname: users.nickname })",
+  "returning:delete": "db.delete(posts).where(eq(posts.id, $1)).returning({ title: posts.title })",
+  "returning:upsert": "db.insert(users).values({ id: $1, email: $2, name: $3 }).onConflictDoUpdate({ target: users.id, set: { name: sql`excluded.name` } }).returning({ id: users.id, nickname: users.nickname })",
+
+  "enums:column": "db.select({ role: users.role }).from(users)",
+  "enums:derived": "{ const x = db.select({ r: users.role }).from(users).as('x'); return db.select({ r: x.r }).from(x); }",
+
   "smoke:smoke": "db.select({ id: users.id, name: users.name }).from(users)",
 };
 
@@ -81,7 +116,7 @@ export const drizzle = ormTool({
     const [type, from] = CLIENT[db];
     const tables = db === "postgres" ? "users, posts, events" : "users, posts";
     const prelude = [
-      `import { eq, gt, like, isNull, exists, count, max, sum, sql } from "drizzle-orm";`,
+      `import { eq, gt, like, isNull, exists, inArray, count, countDistinct, max, min, sum, avg, sql } from "drizzle-orm";`,
       `import type { ${type} } from "${from}";`,
       `import * as schema from "./db/schema";`,
       `import * as relations from "./db/relations";`,

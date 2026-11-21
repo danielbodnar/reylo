@@ -43,10 +43,25 @@ export const compareRows: { id: string; label: string; asks?: string }[] = [
   { id: 'sqlite', label: 'SQLite' },
 ];
 
-/** The rows of the ORM table: a query built in TypeScript has no codegen step of its own to compare, and its nested data is rows nested in a row. */
-export const compareOrmRows = compareRows
-  .filter((r) => r.id !== 'no-codegen')
-  .map((r) => (r.id === 'json-shapes' ? { ...r, asks: 'Rows nested in a row, as a user with their posts, are typed by their shape.' } : r));
+/** The rows of the ORM table: what the SQL table asks that a query built in TypeScript can be asked, then each shape of query an ORM's API may or may not type. Every ORM runs on every database, so the table has no row for each. */
+const row = (id: string) => compareRows.find((r) => r.id === id)!;
+export const compareOrmRows: { id: string; label: string; asks?: string }[] = [
+  row('from-the-database'),
+  row('outer-joins'),
+  row('expression-nullability'),
+  { id: 'aggregates', label: 'Aggregates', asks: 'Each column of a `group by` query is typed, with the null each aggregate can return.' },
+  { id: 'windows', label: 'Window functions', asks: 'A window function is typed, as `row_number() over (…)` and `lag(…)`.' },
+  { id: 'subqueries', label: 'Subqueries', asks: 'A scalar subquery, an `exists` and a derived table are typed by what they return.' },
+  { id: 'with-queries', label: 'WITH queries', asks: 'The columns of a `with` query are typed where the main query reads them, recursive ones included.' },
+  { id: 'set-operations', label: 'Set operations', asks: 'A `union` or an `except` is typed by both its sides.' },
+  { id: 'returning', label: 'Returning rows', asks: 'The row an `insert`, `update`, `delete` or upsert returns is typed.' },
+  { id: 'enums', label: 'Enums', asks: 'An enum column is typed as the union of its values.' },
+  row('parameter-types'),
+  row('parameter-nullability'),
+  row('cardinality'),
+  { ...row('json-shapes'), asks: 'Rows nested in a row, as a user with their posts, are typed by their shape.' },
+  row('json-schema'),
+];
 
 /** Which tools and rows a `<CompareTable />` shows: the SQL tools, or `set="orm"`. */
 export const compareSet = (set?: 'orm') => (set === 'orm' ? { tools: compareOrms, rows: compareOrmRows } : { tools: compareTools, rows: compareRows });

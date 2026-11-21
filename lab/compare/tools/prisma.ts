@@ -59,6 +59,41 @@ const queries: Record<string, Entry> = {
   "json-schema:column": "prisma.events.findMany({ select: { payload: true } })",
   "json-schema:parameter": "prisma.events.create({ data: { id: $1, payload: $2 } })",
 
+  "aggregates:grouped-count": { code: "prisma.posts.groupBy({ by: ['author_id'], _count: { _all: true } })", paths: { author_id: "author_id", n: "_count._all" } },
+  "aggregates:grouped-min": { code: "prisma.posts.groupBy({ by: ['author_id'], _min: { title: true } })", paths: { author_id: "author_id", v: "_min.title" } },
+  "aggregates:having": { code: "prisma.posts.groupBy({ by: ['author_id'], _sum: { score: true }, having: { id: { _count: { gt: 1 } } } })", paths: { author_id: "author_id", v: "_sum.score" } },
+  "aggregates:avg": { code: "prisma.posts.aggregate({ _avg: { score: true } })", pick: "_avg.score" },
+  // Prisma counts rows, or a column's non-null values, but not its distinct values.
+  "aggregates:count-distinct": raw,
+
+  "windows:row-number": raw,
+  "windows:rank": raw,
+  "windows:running-sum": raw,
+  "windows:lag": raw,
+
+  // A relation's row count is `_count`; there is no other column a subquery can compute.
+  "subqueries:scalar-count": { code: "prisma.users.findMany({ select: { name: true, _count: { select: { posts: true } } } })", paths: { name: "name", v: "_count.posts" } },
+  "subqueries:scalar-max": raw,
+  "subqueries:exists": raw,
+  "subqueries:in": "prisma.users.findMany({ select: { name: true }, where: { posts: { some: {} } } })",
+  "subqueries:derived": raw,
+
+  "with-queries:join": raw,
+  "with-queries:left-join": raw,
+  "with-queries:recursive": raw,
+
+  "set-operations:union": raw,
+  "set-operations:union-nullable": raw,
+  "set-operations:except": raw,
+
+  "returning:insert": "prisma.posts.create({ data: { id: $1, author_id: $2, title: $3 }, select: { id: true, score: true } })",
+  "returning:update": "prisma.users.update({ where: { id: $2 }, data: { nickname: $1 }, select: { name: true, nickname: true } })",
+  "returning:delete": "prisma.posts.delete({ where: { id: $1 }, select: { title: true } })",
+  "returning:upsert": "prisma.users.upsert({ where: { id: $1 }, create: { id: $1, email: $2, name: $3 }, update: { name: $3 }, select: { id: true, nickname: true } })",
+
+  "enums:column": "prisma.users.findMany({ select: { role: true } })",
+  "enums:derived": raw,
+
   "smoke:smoke": "prisma.users.findMany({ select: { id: true, name: true } })",
 };
 

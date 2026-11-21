@@ -8,8 +8,8 @@ import { failed, rewrite, type Answer, type Statement, type Tool, type TypedValu
 export const root = resolve(import.meta.dirname, "..");
 export const versionOf = (pkg: string): string => JSON.parse(readFileSync(join(root, "node_modules", pkg, "package.json"), "utf8")).version;
 
-// `value`: the code evaluates to the column's value itself, as a count does, rather than to rows. `pick`: the path to the column's value in each row, for an ORM that nests it (`_max.id`).
-export type Code = string | { code: string; value?: true; pick?: string };
+// `value`: the code evaluates to the column's value itself, as a count does, rather than to rows. `pick`: the path to the column's value in each row, for an ORM that nests it (`_max.id`); `paths`: the same for each of several columns, by the probe's name for it.
+export type Code = string | { code: string; value?: true; pick?: string; paths?: Record<string, string> };
 // A function writes the query from the probe's SQL, for an ORM whose only way to say it is its raw SQL. `null`: the ORM has no query this probe can fairly stand for, and the comment beside it says why.
 export type Entry = Code | Partial<Record<Db, Code>> | ((sql: string) => Code) | null;
 export interface Project {
@@ -49,11 +49,11 @@ const candidates = (s: Statement, i: number): string[] => {
   return [...new Set((want?.kinds ?? ["text"]).map(kindToValue))];
 };
 
-function resolveCode(entry: Entry | undefined, db: Db, sql: string): { code: string; value: boolean; pick?: string } | undefined {
+function resolveCode(entry: Entry | undefined, db: Db, sql: string): { code: string; value: boolean; pick?: string; paths?: Record<string, string> } | undefined {
   if (entry === undefined || entry === null) return undefined;
   if (typeof entry === "function") return resolveCode(entry(sql), db, sql);
   if (typeof entry === "string") return { code: entry, value: false };
-  if ("code" in entry) return { code: entry.code as string, value: !!entry.value, pick: entry.pick as string | undefined };
+  if ("code" in entry) return { code: entry.code as string, value: !!entry.value, pick: entry.pick as string | undefined, paths: entry.paths as Record<string, string> | undefined };
   const c = (entry as Partial<Record<Db, Code>>)[db];
   return c === undefined ? undefined : resolveCode(c, db, sql);
 }
@@ -90,12 +90,14 @@ function compile(dir: string, file: string, options: ts.CompilerOptions) {
 function readType(checker: ts.TypeChecker, type: ts.Type): TypedValue {
   const kinds = new Set<Kind>();
   const fields = new Set<string>();
+  const labels = new Set<string>();
   let nullable = false;
   const visit = (t: ts.Type, top: boolean, depth: number): void => {
     if (t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) { if (top) nullable = true; kinds.add("any"); return; }
     if (t.isUnion()) return t.types.forEach((x) => visit(x, top, depth));
     if (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) { if (top) nullable = true; return; }
     if (t.flags & (ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike)) return void kinds.add("num");
+    if (t.isStringLiteral()) { if (top) labels.add(t.value); return void kinds.add("text"); }
     if (t.flags & ts.TypeFlags.StringLike) return void kinds.add("text");
     if (t.flags & ts.TypeFlags.BooleanLike) return void kinds.add("bool");
     const name = (t.aliasSymbol ?? t.getSymbol())?.getName() ?? "";
@@ -108,7 +110,7 @@ function readType(checker: ts.TypeChecker, type: ts.Type): TypedValue {
   visit(type, true, 0);
   const kind: Kind = kinds.has("any") ? "any" : kinds.has("json") ? "json" : kinds.values().next().value ?? "any";
   const text = checker.typeToString(type, undefined, ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.InTypeAlias);
-  return { type: text, kind, nullable, fields: fields.size ? [...fields] : undefined };
+  return { type: text, kind, nullable, fields: fields.size ? [...fields] : undefined, labels: labels.size ? [...labels] : undefined };
 }
 const untyped = (t: ts.Type) => !!(t.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown));
 
@@ -116,6 +118,7 @@ export function ormTool(spec: OrmSpec): Tool {
   const projects = new Map<Db, Project>();
   return {
     id: spec.id,
+    orm: true,
     name: spec.name,
     version: spec.version,
     dbs: spec.dbs,
@@ -125,7 +128,7 @@ export function ormTool(spec: OrmSpec): Tool {
       if (!projects.has(db)) projects.set(db, spec.project(db, urls));
       const project = projects.get(db)!;
       const answers: Record<string, Answer> = {};
-      type Item = { s: Statement; name: string; code: string; value: boolean; path?: string; n: number; pick: number[]; options: string[][] };
+      type Item = { s: Statement; name: string; code: string; value: boolean; paths?: Record<string, string>; n: number; pick: number[]; options: string[][] };
       const items: Item[] = [];
       statements.forEach((s, i) => {
         // The run's check for a database to reach names its statement by a bare key: the smoke query.
@@ -139,7 +142,8 @@ export function ormTool(spec: OrmSpec): Tool {
         if (!c) throw new Error(`${spec.id}: no query for ${group}:${probe} on ${db}`);
         const n = new Set([...c.code.matchAll(/\$(\d+)/g)].map((m) => m[1])).size;
         const options = Array.from({ length: n }, (_, k) => candidates(s, k));
-        items.push({ s, name: `q${i}`, code: c.code, value: c.value, path: c.pick, n, pick: options.map(() => 0), options });
+        const paths = c.paths ?? (c.pick ? { [s.probe.columns?.[0]?.name ?? c.pick.split(".").pop()!]: c.pick } : undefined);
+        items.push({ s, name: `q${i}`, code: c.code, value: c.value, paths, n, pick: options.map(() => 0), options });
       });
       if (!items.length) return { answers, wrote: project.wrote };
       const valuesOf = (it: Item) => it.pick.map((p, k) => it.options[k][p]);
@@ -181,10 +185,13 @@ export function ormTool(spec: OrmSpec): Tool {
         let result = aliases.get(`${it.name}_R`)!;
         let columns: (TypedValue & { name: string })[];
         if (it.value) columns = [{ name: "v", ...readType(checker, result) }];
-        else if (it.path) {
-          if (checker.isArrayType(result)) result = checker.getTypeArguments(result as ts.TypeReference)[0];
-          for (const key of it.path.split(".")) result = checker.getTypeOfSymbol(checker.getPropertyOfType(checker.getNonNullableType(result), key)!);
-          columns = [{ name: it.s.probe.columns?.[0]?.name ?? it.path.split(".").pop()!, ...readType(checker, result) }];
+        else if (it.paths) {
+          const row = checker.isArrayType(result) ? checker.getTypeArguments(result as ts.TypeReference)[0] : result;
+          columns = Object.entries(it.paths).map(([name, path]) => {
+            let t = row;
+            for (const key of path.split(".")) t = checker.getTypeOfSymbol(checker.getPropertyOfType(checker.getNonNullableType(t), key)!);
+            return { name, ...readType(checker, t) };
+          });
         } else {
           if (checker.isArrayType(result)) result = checker.getTypeArguments(result as ts.TypeReference)[0];
           // A row the ORM leaves untyped: nothing of the query was read.
