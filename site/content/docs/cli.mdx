@@ -105,6 +105,29 @@ capabilities:
 diagnostics: []
 ```
 
+Each field of the result:
+
+| Field | What it holds |
+| --- | --- |
+| `file` | The file the statement came from: the CLI's own field, which a statement given with `--sql` doesn't have |
+| `$schema` | The format's version, as the URL of its JSON Schema |
+| `dialect` | The database, and its server's version |
+| `sql` | The statement as the database runs it, with the database's own placeholders |
+| `kind` | What the statement does: `select`, `insert`, `update`, `delete`, `merge` or `other` |
+| `comment` | The comment before the statement |
+| `params` | Each parameter's name and [type](/typedefs) |
+| `result` | Each column's name and type, and the cardinality: how many rows the statement returns |
+| `capabilities` | The tables the statement reads or writes |
+| `diagnostics` | What the database reports where it refuses the statement |
+
+All type information is presented using the [Reylo Type Defs](/typedefs) specification.
+
+<Callout type="warning" title="A developing API">
+
+Reylo Type Defs is still changing. For now, consider it an internal detail of Reylo, and don't build on it.
+
+</Callout>
+
 It takes files, directories and globs, or one statement with `--sql`:
 
 ```sh

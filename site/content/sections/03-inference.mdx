@@ -4,46 +4,7 @@ title: "Inference"
 
 Reylo sends each statement against your live dev database without running it. It gets back a prepared version of the query plus your database's type descriptors, and it infers type information based on those.
 
-Reylo returns the types in a structured format that is then consumed by the TypeScript content mapper. To read the data in its raw form, you can use the CLI:
-
-<Analyzed file="queries/is_verified.sql">
-
-```sql schema
-create table users (
-  id int8 primary key,
-  verified boolean not null
-);
-```
-
-```sql
--- Whether a user has verified their email.
-select verified from users where id = :id
-```
-
-</Analyzed>
-
-Each field of the result:
-
-| Field | What it holds |
-| --- | --- |
-| `file` | The file `reylo analyze` read the statement from. Only the CLI adds it: the format has no such field, and a statement given with `--sql` has none |
-| `$schema` | The format's version, as the URL of its JSON Schema |
-| `dialect` | The database, and its server's version |
-| `sql` | The statement as the database runs it, with the database's own placeholders |
-| `kind` | What the statement does: `select`, `insert`, `update`, `delete`, `merge` or `other` |
-| `comment` | The comment before the statement |
-| `params` | Each parameter's name and [type](/typedefs) |
-| `result` | Each column's name and type, and the cardinality: how many rows the statement returns |
-| `capabilities` | The tables the statement reads or writes |
-| `diagnostics` | What the database reports where it refuses the statement |
-
-All type information is presented using the [Reylo Type Defs](/typedefs) specification.
-
-<Callout type="warning" title="A developing API">
-
-Reylo Type Defs is still changing. For now, consider it an internal detail of Reylo, and don't build on it.
-
-</Callout>
+Reylo returns the types in a structured format that is then consumed by the TypeScript content mapper. To read the data in its raw form, you can use the [CLI](/cli#reylo-analyze).
 
 <Rust>
 Each card shows the types in TypeScript or in Rust: pick one at the top of any card.
