@@ -1,9 +1,9 @@
 {
- "at": "2026-11-21T00:24:23.299Z",
+ "at": "2026-11-21T10:09:15.590Z",
  "tools": {
   "reylo": {
    "name": "Reylo",
-   "version": "0.8.0",
+   "version": "0.8.1",
    "cells": {
     "no-codegen": {
      "state": "y",
@@ -43,25 +43,7 @@
      "state": "y"
     },
     "with-queries": {
-     "state": "p",
-     "example": {
-      "sql": "with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums",
-      "params": [],
-      "columns": [
-       {
-        "name": "n",
-        "type": "bigint | null",
-        "wrong": true
-       }
-      ],
-      "reylo": {
-       "params": "Record<never, never>",
-       "row": "{ n: bigint | null }",
-       "cardinality": "many",
-       "rows": "many rows"
-      },
-      "on": "MySQL"
-     }
+     "state": "y"
     },
     "set-operations": {
      "state": "y"
@@ -70,26 +52,7 @@
      "state": "y"
     },
     "enums": {
-     "state": "p",
-     "example": {
-      "sql": "select x.r from (select role as r from users) x",
-      "schema": "create type role as enum ('admin', 'member');\ncreate table users (id int primary key, email text not null unique, name text not null, nickname text, external_id uuid, role role not null default 'member');",
-      "params": [],
-      "columns": [
-       {
-        "name": "r",
-        "type": "string",
-        "wrong": true
-       }
-      ],
-      "reylo": {
-       "params": "Record<never, never>",
-       "row": "{ r: string }",
-       "cardinality": "many",
-       "rows": "many rows"
-      },
-      "on": "MySQL"
-     }
+     "state": "y"
     },
     "postgres": {
      "state": "y"

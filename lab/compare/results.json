@@ -2,7 +2,7 @@
  "tools": {
   "reylo": {
    "name": "Reylo",
-   "version": "0.8.0",
+   "version": "0.8.1",
    "dbs": [
     "postgres",
     "mysql",
@@ -5221,8 +5221,8 @@
      ]
     },
     "with-queries": {
-     "state": "p",
-     "right": 8,
+     "state": "y",
+     "right": 9,
      "total": 9,
      "results": [
       {
@@ -5373,29 +5373,23 @@
        "db": "mysql",
        "probe": "recursive",
        "sql": "with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums",
-       "ok": false,
-       "problems": [
-        "`n` is typed `bigint | null`, but it is never null"
-       ],
-       "at": [
-        {
-         "column": "n"
-        }
-       ],
+       "ok": true,
+       "problems": [],
+       "at": [],
        "answer": {
         "params": [],
         "columns": [
          {
           "name": "n",
-          "type": "bigint | null",
+          "type": "bigint",
           "kind": "num",
-          "nullable": true
+          "nullable": false
          }
         ],
         "cardinality": "many",
         "shown": {
          "params": "Record<never, never>",
-         "row": "{ n: bigint | null }"
+         "row": "{ n: bigint }"
         }
        }
       },
@@ -6042,8 +6036,8 @@
      ]
     },
     "enums": {
-     "state": "p",
-     "right": 3,
+     "state": "y",
+     "right": 4,
      "total": 4,
      "results": [
       {
@@ -6122,21 +6116,15 @@
        "db": "mysql",
        "probe": "derived",
        "sql": "select x.r from (select role as r from users) x",
-       "ok": false,
-       "problems": [
-        "`r` is typed `string`, without its values"
-       ],
-       "at": [
-        {
-         "column": "r"
-        }
-       ],
+       "ok": true,
+       "problems": [],
+       "at": [],
        "answer": {
         "params": [],
         "columns": [
          {
           "name": "r",
-          "type": "string",
+          "type": "\"admin\" | \"member\"",
           "kind": "text",
           "nullable": false
          }
@@ -6144,7 +6132,7 @@
         "cardinality": "many",
         "shown": {
          "params": "Record<never, never>",
-         "row": "{ r: string }"
+         "row": "{ r: \"admin\" | \"member\" }"
         }
        }
       }
@@ -53983,5 +53971,5 @@
    }
   }
  },
- "at": "2026-11-21T00:24:23.299Z"
+ "at": "2026-11-21T10:09:15.590Z"
 }

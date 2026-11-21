@@ -4,7 +4,7 @@ Written by `./run.sh` on 2026-11-21. Each mark comes from what the tool answered
 
 | | Reylo | sqlc | PgTyped | TypedSQL | sqlx-ts | SafeQL | sqlx | TypeSQL | Postgres Typed SQL | Drizzle | Kysely | Prisma | TypeORM |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Version | 0.8.0 | v1.31.1 | 2.4.3 | 7.10.1 | 0.49.0 | 5.4.2 | 0.9.0 | 0.24.0 | 0.1.0-beta.22 | 0.45.4 | 0.29.9 | 7.10.1 | 1.1.3 |
+| Version | 0.8.1 | v1.31.1 | 2.4.3 | 7.10.1 | 0.49.0 | 5.4.2 | 0.9.0 | 0.24.0 | 0.1.0-beta.22 | 0.45.4 | 0.29.9 | 7.10.1 | 1.1.3 |
 | No codegen | yes | no | no | no | no | partly | yes | no | partly | no | no | no | yes |
 | Live database | yes (3/3) | partly (3/3) | yes (3/3) | yes (3/3) | partly (1/3) | partly (2/3) | yes (3/3) | yes (3/3) | no (3/3) | no | no | no | no |
 | Nullable left joins | yes (17/17) | partly (14/17) | no (0/6) | partly (12/17) | no (0/17) | yes (6/6) | partly (12/17) | partly (11/17) | yes (6/6) | yes (17/17) | yes (17/17) | no (0/17) | no (0/17) |
@@ -17,25 +17,17 @@ Written by `./run.sh` on 2026-11-21. Each mark comes from what the tool answered
 | Aggregates | yes (15/15) | no | no | no | no | no | no | no | no | partly (12/15) | partly (9/15) | partly (9/15) | no (0/15) |
 | Window functions | yes (12/12) | no | no | no | no | no | no | no | no | no (0/12) | no (0/12) | no (0/12) | no (0/12) |
 | Subqueries | yes (15/15) | no | no | no | no | no | no | no | no | partly (9/15) | partly (12/15) | partly (6/15) | partly (3/15) |
-| WITH queries | partly (8/9) | no | no | no | no | no | no | no | no | partly (3/9) | yes (9/9) | no (0/9) | no (0/9) |
+| WITH queries | yes (9/9) | no | no | no | no | no | no | no | no | partly (3/9) | yes (9/9) | no (0/9) | no (0/9) |
 | Set operations | yes (9/9) | no | no | no | no | no | no | no | no | yes (9/9) | partly (8/9) | no (0/9) | no (0/9) |
 | Returning rows | yes (8/8) | no | no | no | no | no | no | no | no | yes (8/8) | partly (6/8) | yes (8/8) | partly (6/8) |
-| Enums | partly (3/4) | no | no | no | no | no | no | no | no | yes (4/4) | yes (4/4) | partly (2/4) | partly (2/4) |
+| Enums | yes (4/4) | no | no | no | no | no | no | no | no | yes (4/4) | yes (4/4) | partly (2/4) | partly (2/4) |
 | Postgres | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | MySQL | yes | yes | no | yes | yes | no | yes | yes | no | yes | yes | yes | yes |
 | SQLite | yes | yes | no | yes | yes | no | yes | yes | no | yes | yes | yes | yes |
 
-## Reylo 0.8.0
+## Reylo 0.8.1
 
 **No codegen**: yes. Nothing to commit after a run.
-
-**WITH queries**: partly, 8 of 9
-
-- mysql: `with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums`: `n` is typed `bigint | null`, but it is never null
-
-**Enums**: partly, 3 of 4
-
-- mysql: `select x.r from (select role as r from users) x`: `r` is typed `string`, without its values
 
 ## sqlc v1.31.1
 
