@@ -1,9 +1,9 @@
 {
- "at": "2026-11-21T00:14:41.792Z",
+ "at": "2026-11-21T00:24:23.299Z",
  "tools": {
   "reylo": {
    "name": "Reylo",
-   "version": "0.7.0",
+   "version": "0.8.0",
    "cells": {
     "no-codegen": {
      "state": "y",
@@ -50,7 +50,7 @@
       "columns": [
        {
         "name": "n",
-        "type": "int8|int4 | null",
+        "type": "bigint | null",
         "wrong": true
        }
       ],
@@ -72,19 +72,19 @@
     "enums": {
      "state": "p",
      "example": {
-      "sql": "select role from users",
+      "sql": "select x.r from (select role as r from users) x",
       "schema": "create type role as enum ('admin', 'member');\ncreate table users (id int primary key, email text not null unique, name text not null, nickname text, external_id uuid, role role not null default 'member');",
       "params": [],
       "columns": [
        {
-        "name": "role",
-        "type": "text",
+        "name": "r",
+        "type": "string",
         "wrong": true
        }
       ],
       "reylo": {
        "params": "Record<never, never>",
-       "row": "{ role: string }",
+       "row": "{ r: string }",
        "cardinality": "many",
        "rows": "many rows"
       },
@@ -571,7 +571,7 @@
       ],
       "reylo": {
        "params": "Record<never, never>",
-       "row": "{ v: number | null }",
+       "row": "{ v: number }",
        "cardinality": "many",
        "rows": "many rows"
       }
@@ -751,7 +751,7 @@
       ],
       "reylo": {
        "params": "Record<never, never>",
-       "row": "{ v: number | null }",
+       "row": "{ v: number }",
        "cardinality": "many",
        "rows": "many rows"
       }

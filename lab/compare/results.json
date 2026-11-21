@@ -2,7 +2,7 @@
  "tools": {
   "reylo": {
    "name": "Reylo",
-   "version": "0.7.0",
+   "version": "0.8.0",
    "dbs": [
     "postgres",
     "mysql",
@@ -35,15 +35,15 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4 | null",
+          "type": "number",
           "kind": "num",
-          "nullable": true
+          "nullable": false
          }
         ],
         "cardinality": "many",
         "shown": {
          "params": "Record<never, never>",
-         "row": "{ v: number | null }"
+         "row": "{ v: number }"
         }
        }
       },
@@ -59,7 +59,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "numeric",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -83,7 +83,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4[] | null",
+          "type": "number[] | null",
           "kind": "json",
           "nullable": true
          }
@@ -114,13 +114,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -144,13 +144,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -172,7 +172,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -180,13 +180,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -210,13 +210,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -240,13 +240,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -270,13 +270,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -300,13 +300,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -330,13 +330,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -358,7 +358,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -366,13 +366,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -396,13 +396,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -426,13 +426,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -456,13 +456,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -486,13 +486,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -514,7 +514,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -522,13 +522,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -552,13 +552,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -582,13 +582,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -612,13 +612,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
           "name": "title",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -649,7 +649,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -673,7 +673,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -697,7 +697,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -721,7 +721,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -745,7 +745,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -769,7 +769,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -793,7 +793,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -817,7 +817,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -841,7 +841,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -865,7 +865,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -889,7 +889,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -913,7 +913,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -937,7 +937,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -961,7 +961,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -985,7 +985,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -1009,7 +1009,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -1033,7 +1033,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1057,7 +1057,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1081,7 +1081,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -1105,7 +1105,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -1129,7 +1129,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4|int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -1153,7 +1153,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "numeric | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1177,7 +1177,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -1201,7 +1201,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1225,7 +1225,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1249,7 +1249,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1273,7 +1273,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1297,7 +1297,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -1321,7 +1321,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -1345,7 +1345,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1369,7 +1369,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1393,7 +1393,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -1417,7 +1417,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -1441,7 +1441,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -1465,7 +1465,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -1489,7 +1489,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4|int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -1513,7 +1513,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4|int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -1537,7 +1537,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4|int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -1561,7 +1561,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -1585,7 +1585,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1609,7 +1609,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1633,7 +1633,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -1657,7 +1657,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -1681,7 +1681,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1705,7 +1705,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -1729,7 +1729,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1753,7 +1753,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -1777,7 +1777,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1801,7 +1801,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1825,7 +1825,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -1849,7 +1849,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -1873,7 +1873,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -1897,7 +1897,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -1921,7 +1921,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -1945,7 +1945,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1969,7 +1969,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -1993,7 +1993,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2022,7 +2022,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2030,7 +2030,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2052,7 +2052,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2060,7 +2060,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2082,22 +2082,22 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -2120,7 +2120,7 @@
        "answer": {
         "params": [
          {
-          "type": "int8",
+          "type": "number | bigint | string",
           "kind": "num",
           "nullable": false
          }
@@ -2128,7 +2128,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2150,7 +2150,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2158,7 +2158,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2180,7 +2180,7 @@
        "answer": {
         "params": [
          {
-          "type": "uuid",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2188,7 +2188,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2210,15 +2210,15 @@
        "answer": {
         "params": [
          {
-          "type": "timestamptz",
-          "kind": "time",
+          "type": "string",
+          "kind": "text",
           "nullable": false
          }
         ],
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2240,7 +2240,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2248,7 +2248,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2270,7 +2270,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2278,7 +2278,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2300,22 +2300,22 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -2338,7 +2338,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2346,7 +2346,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2368,7 +2368,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2376,7 +2376,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2398,7 +2398,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2406,7 +2406,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2428,7 +2428,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2436,7 +2436,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2458,22 +2458,22 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -2496,7 +2496,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2504,7 +2504,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2526,7 +2526,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2534,7 +2534,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2563,22 +2563,22 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -2601,12 +2601,12 @@
        "answer": {
         "params": [
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2629,7 +2629,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2637,7 +2637,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2659,7 +2659,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2667,7 +2667,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2689,22 +2689,22 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -2727,12 +2727,12 @@
        "answer": {
         "params": [
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2755,7 +2755,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2763,7 +2763,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2785,7 +2785,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2793,7 +2793,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2815,22 +2815,22 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -2853,12 +2853,12 @@
        "answer": {
         "params": [
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2881,7 +2881,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2889,7 +2889,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2911,7 +2911,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2919,7 +2919,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2948,7 +2948,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -2956,13 +2956,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2984,7 +2984,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -2992,7 +2992,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3016,7 +3016,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -3038,17 +3038,17 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3056,7 +3056,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3080,7 +3080,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3104,7 +3104,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3126,12 +3126,12 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3139,7 +3139,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3161,7 +3161,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3169,7 +3169,7 @@
         "columns": [
          {
           "name": "title",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3191,7 +3191,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3199,7 +3199,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3221,7 +3221,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3244,7 +3244,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3252,13 +3252,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3280,7 +3280,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3288,7 +3288,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3312,7 +3312,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -3336,7 +3336,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3360,7 +3360,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3382,7 +3382,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3390,7 +3390,7 @@
         "columns": [
          {
           "name": "title",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3412,7 +3412,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3420,7 +3420,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3442,7 +3442,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3465,7 +3465,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3473,13 +3473,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3501,7 +3501,7 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3509,7 +3509,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3533,7 +3533,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3555,17 +3555,17 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3573,7 +3573,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3597,7 +3597,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3621,7 +3621,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3643,12 +3643,12 @@
        "answer": {
         "params": [
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3656,7 +3656,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3678,7 +3678,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3686,7 +3686,7 @@
         "columns": [
          {
           "name": "title",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -3708,7 +3708,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3716,7 +3716,7 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3738,7 +3738,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -3770,7 +3770,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "{ id: int4; name: text }",
+          "type": "{ id: number; name: string }",
           "kind": "json",
           "nullable": false,
           "fields": [
@@ -3798,7 +3798,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "{ id: int4; title: text }[] | null",
+          "type": "{ id: number; title: string }[] | null",
           "kind": "json",
           "nullable": true,
           "fields": [
@@ -3826,7 +3826,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "{ id: int4; name: text }",
+          "type": "{ id: number; name: string }",
           "kind": "json",
           "nullable": false,
           "fields": [
@@ -3854,7 +3854,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "{ id: int4; title: text }[] | null",
+          "type": "{ id: number; title: string }[] | null",
           "kind": "json",
           "nullable": true,
           "fields": [
@@ -3882,7 +3882,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "{ id: integer; name: text }",
+          "type": "{ id: number; name: string }",
           "kind": "json",
           "nullable": false,
           "fields": [
@@ -3910,7 +3910,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "{ id: integer; title: text }[]",
+          "type": "{ id: number; title: string }[]",
           "kind": "json",
           "nullable": false,
           "fields": [
@@ -3945,8 +3945,8 @@
         "columns": [
          {
           "name": "payload",
-          "type": "json({\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false})",
-          "kind": "any",
+          "type": "{ x: number }",
+          "kind": "json",
           "nullable": false,
           "fields": [
            "x"
@@ -3970,13 +3970,13 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "json({\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}},\"required\":[\"x\"],\"additionalProperties\":false})",
-          "kind": "any",
+          "type": "{ x: number }",
+          "kind": "json",
           "nullable": false,
           "fields": [
            "x"
@@ -4010,13 +4010,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4040,13 +4040,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -4070,13 +4070,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -4100,7 +4100,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "numeric | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4124,7 +4124,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4148,13 +4148,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4178,13 +4178,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -4208,13 +4208,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "numeric | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4238,7 +4238,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "numeric | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4262,7 +4262,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4286,13 +4286,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -4316,13 +4316,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -4346,13 +4346,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -4376,7 +4376,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "real | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -4400,7 +4400,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -4431,13 +4431,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4461,13 +4461,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4491,13 +4491,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -4521,13 +4521,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4551,13 +4551,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4581,13 +4581,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4611,13 +4611,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "numeric | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4641,13 +4641,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4671,13 +4671,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -4701,13 +4701,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -4731,13 +4731,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -4761,13 +4761,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4798,13 +4798,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4828,13 +4828,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -4858,13 +4858,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -4888,7 +4888,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -4912,13 +4912,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4942,13 +4942,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -4972,13 +4972,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5002,13 +5002,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -5032,7 +5032,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5056,13 +5056,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -5086,13 +5086,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5116,13 +5116,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5146,13 +5146,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "v",
-          "type": "bool",
+          "type": "boolean",
           "kind": "bool",
           "nullable": false
          }
@@ -5176,7 +5176,7 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5200,13 +5200,13 @@
         "columns": [
          {
           "name": "author_id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5237,13 +5237,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -5267,13 +5267,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -5297,7 +5297,7 @@
         "columns": [
          {
           "name": "n",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5321,13 +5321,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -5351,13 +5351,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "int8 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -5375,7 +5375,7 @@
        "sql": "with recursive nums (n) as (select 1 union all select n + 1 from nums where n < 5) select n from nums",
        "ok": false,
        "problems": [
-        "`n` is typed `int8|int4 | null`, but it is never null"
+        "`n` is typed `bigint | null`, but it is never null"
        ],
        "at": [
         {
@@ -5387,7 +5387,7 @@
         "columns": [
          {
           "name": "n",
-          "type": "int8|int4 | null",
+          "type": "bigint | null",
           "kind": "num",
           "nullable": true
          }
@@ -5411,13 +5411,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5441,13 +5441,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "n",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -5471,7 +5471,7 @@
         "columns": [
          {
           "name": "n",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5502,7 +5502,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5526,7 +5526,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5550,7 +5550,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5574,7 +5574,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5598,7 +5598,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5622,7 +5622,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "int4|int8",
+          "type": "bigint",
           "kind": "num",
           "nullable": false
          }
@@ -5646,7 +5646,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5670,7 +5670,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5694,7 +5694,7 @@
         "columns": [
          {
           "name": "v",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5723,17 +5723,17 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5741,13 +5741,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "score",
-          "type": "int4 | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -5769,12 +5769,12 @@
        "answer": {
         "params": [
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5782,13 +5782,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "nickname",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5810,7 +5810,7 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5818,7 +5818,7 @@
         "columns": [
          {
           "name": "title",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5840,17 +5840,17 @@
        "answer": {
         "params": [
          {
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5858,13 +5858,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "int4",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "nickname",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5886,17 +5886,17 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -5904,13 +5904,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "score",
-          "type": "integer | null",
+          "type": "number | null",
           "kind": "num",
           "nullable": true
          }
@@ -5932,12 +5932,12 @@
        "answer": {
         "params": [
          {
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          },
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5945,13 +5945,13 @@
         "columns": [
          {
           "name": "name",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
           "name": "nickname",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -5973,7 +5973,7 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          }
@@ -5981,7 +5981,7 @@
         "columns": [
          {
           "name": "title",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -6003,17 +6003,17 @@
        "answer": {
         "params": [
          {
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          },
          {
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -6021,13 +6021,13 @@
         "columns": [
          {
           "name": "id",
-          "type": "integer",
+          "type": "number",
           "kind": "num",
           "nullable": false
          },
          {
           "name": "nickname",
-          "type": "text | null",
+          "type": "string | null",
           "kind": "text",
           "nullable": true
          }
@@ -6043,7 +6043,7 @@
     },
     "enums": {
      "state": "p",
-     "right": 2,
+     "right": 3,
      "total": 4,
      "results": [
       {
@@ -6098,21 +6098,15 @@
        "db": "mysql",
        "probe": "column",
        "sql": "select role from users",
-       "ok": false,
-       "problems": [
-        "`role` is typed `text`, without its values"
-       ],
-       "at": [
-        {
-         "column": "role"
-        }
-       ],
+       "ok": true,
+       "problems": [],
+       "at": [],
        "answer": {
         "params": [],
         "columns": [
          {
           "name": "role",
-          "type": "text",
+          "type": "\"admin\" | \"member\"",
           "kind": "text",
           "nullable": false
          }
@@ -6120,7 +6114,7 @@
         "cardinality": "many",
         "shown": {
          "params": "Record<never, never>",
-         "row": "{ role: string }"
+         "row": "{ role: \"admin\" | \"member\" }"
         }
        }
       },
@@ -6130,7 +6124,7 @@
        "sql": "select x.r from (select role as r from users) x",
        "ok": false,
        "problems": [
-        "`r` is typed `text`, without its values"
+        "`r` is typed `string`, without its values"
        ],
        "at": [
         {
@@ -6142,7 +6136,7 @@
         "columns": [
          {
           "name": "r",
-          "type": "text",
+          "type": "string",
           "kind": "text",
           "nullable": false
          }
@@ -53989,5 +53983,5 @@
    }
   }
  },
- "at": "2026-11-21T00:14:41.792Z"
+ "at": "2026-11-21T00:24:23.299Z"
 }

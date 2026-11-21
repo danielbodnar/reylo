@@ -62,9 +62,6 @@ importers:
       reflect-metadata:
         specifier: 0.2.2
         version: 0.2.2
-      reylo:
-        specifier: 0.7.0
-        version: 0.7.0
       typeorm:
         specifier: 1.1.3
         version: 1.1.3(better-sqlite3@12.11.1)(mysql2@3.15.3)(pg@8.23.1)
@@ -1000,50 +997,6 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
-
-  '@reylosql/engine-darwin-arm64@0.7.0':
-    resolution: {integrity: sha512-Mjnzrd88NwpUCgPhinx2Dl3NcpDQ/O7n/5Vzpc+Z3SXQ+6UDuyu2pX5/Iy3EyIs7GcvbGH71EGRn05drY9iqGg==}
-    cpu: [arm64]
-    os: [darwin]
-
-  '@reylosql/engine-darwin-x64@0.7.0':
-    resolution: {integrity: sha512-KViE7mnDL/a9n/0OuwKoktk0Nfs9sr/8kXQBHrq9cNdoBSeeuJ/dMTcokqo4+epXvMd4Q/5ywfn0IAs9YB4rAA==}
-    cpu: [x64]
-    os: [darwin]
-
-  '@reylosql/engine-linux-arm64-musl@0.7.0':
-    resolution: {integrity: sha512-hgfGCZiK0sQJCj/ghjCqh1jYfNEv2PE7h5ajZkqnjZof0WrXE0uYhyz0HK9thL3jXC5Bc/B+wAUqqE93900rmA==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  '@reylosql/engine-linux-arm64@0.7.0':
-    resolution: {integrity: sha512-fy37HBeaGeKffODQRo9ZGE6ZHW4xfSm3XIskYbbuuFVHYrr7loGiLQts1NrVoZR39mnr7nMCl7NSP85pE0toEw==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [glibc]
-
-  '@reylosql/engine-linux-x64-musl@0.7.0':
-    resolution: {integrity: sha512-rTi5jo69dvvKX7KYz6mScVrB0T3nDdeQOEBsvsFUxjWGk7pon21Ii5ZxcYZZwnp7BrNpHHANMrElrS+PFGhnVA==}
-    cpu: [x64]
-    os: [linux]
-    libc: [musl]
-
-  '@reylosql/engine-linux-x64@0.7.0':
-    resolution: {integrity: sha512-blWEtAY/JAmHKNoDLlzjaLqfmBFQIv5jU7fe/YfzrFfmqZ0zq/Fp4Zzew6vrloxRcISrLTlHFbqBe/VrHr3+6A==}
-    cpu: [x64]
-    os: [linux]
-    libc: [glibc]
-
-  '@reylosql/engine-win32-arm64@0.7.0':
-    resolution: {integrity: sha512-MQTBJ0XDip1yYrbMztdaw15wvak8LxMCewBulB9xNnAV6jt9m8Io9ftwwkRlCmMG+J+8EfAJEZpmAWVz5h4NDA==}
-    cpu: [arm64]
-    os: [win32]
-
-  '@reylosql/engine-win32-x64@0.7.0':
-    resolution: {integrity: sha512-xwUlkMgHO/v0PrBLGb0RUrHXi0HroL4oge42nZxL1l6SMRJmlFNkqz6y6zHqjaWRug5A9mymhf9QtBlEZOjz1w==}
-    cpu: [x64]
-    os: [win32]
 
   '@rollup/rollup-linux-x64-gnu@4.67.4':
     resolution: {integrity: sha512-wL7MS4r0fYcxluF3ne2plofHZiB/LsqNCnyaUlyiKpAJLb6agPSFz7DEFCfkonWAZXMrLwCmC08b2ZEnEdJkog==}
@@ -2598,16 +2551,6 @@ packages:
     resolution: {integrity: sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow==}
     engines: {node: '>= 4'}
 
-  reylo@0.7.0:
-    resolution: {integrity: sha512-h2w3l24KVs+VnKdw2fPeq5GvJirTKrtz5Vy0Ngt+JvHGQ+gwG7fEF/0vr7l5Hmw9PSIK3tL+FyPo0Kma7n41bg==}
-    engines: {node: '>=24'}
-    hasBin: true
-    peerDependencies:
-      slonik: '>=49.12.0'
-    peerDependenciesMeta:
-      slonik:
-        optional: true
-
   robust-predicates@3.0.3:
     resolution: {integrity: sha512-NS3levdsRIUOmiJ8FZWCP7LG3QpJyrs/TE0Zpf1yvZu8cAJJ6QMW92H1c7kWpdIHo8RvmLxN/o2JXTKHp74lUA==}
 
@@ -3547,30 +3490,6 @@ snapshots:
     dependencies:
       '@types/react': 19.3.0
       react: 19.3.1
-
-  '@reylosql/engine-darwin-arm64@0.7.0':
-    optional: true
-
-  '@reylosql/engine-darwin-x64@0.7.0':
-    optional: true
-
-  '@reylosql/engine-linux-arm64-musl@0.7.0':
-    optional: true
-
-  '@reylosql/engine-linux-arm64@0.7.0':
-    optional: true
-
-  '@reylosql/engine-linux-x64-musl@0.7.0':
-    optional: true
-
-  '@reylosql/engine-linux-x64@0.7.0':
-    optional: true
-
-  '@reylosql/engine-win32-arm64@0.7.0':
-    optional: true
-
-  '@reylosql/engine-win32-x64@0.7.0':
-    optional: true
 
   '@rollup/rollup-linux-x64-gnu@4.67.4':
     optional: true
@@ -4954,17 +4873,6 @@ snapshots:
   ret@0.5.1: {}
 
   retry@0.12.0: {}
-
-  reylo@0.7.0:
-    optionalDependencies:
-      '@reylosql/engine-darwin-arm64': 0.7.0
-      '@reylosql/engine-darwin-x64': 0.7.0
-      '@reylosql/engine-linux-arm64': 0.7.0
-      '@reylosql/engine-linux-arm64-musl': 0.7.0
-      '@reylosql/engine-linux-x64': 0.7.0
-      '@reylosql/engine-linux-x64-musl': 0.7.0
-      '@reylosql/engine-win32-arm64': 0.7.0
-      '@reylosql/engine-win32-x64': 0.7.0
 
   robust-predicates@3.0.3: {}
 
