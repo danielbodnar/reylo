@@ -25,6 +25,7 @@
 //! runs it.
 
 mod analyze;
+mod lsp;
 mod matched;
 mod yaml;
 
@@ -548,6 +549,7 @@ pub fn main() {
             0
         }
         Some("analyze") => analyze::run(&args[1..]),
+        Some("lsp") => lsp::run(&args[1..]),
         Some("engine") => engine_command(&args[1..]),
         Some("play") => {
             eprintln!("reylo play runs from reylo's npm package, which renders the playground's TypeScript: npx reylo play");
