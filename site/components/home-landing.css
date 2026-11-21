@@ -236,9 +236,13 @@
   color: #160c08;
 }
 
+/* A line taller than the pill's 1, so the box its ellipsis clips to holds the descenders: under
+   line-height 1, the g of "migrations" was cut off. The badge stays the taller item, so the pill
+   keeps its height. */
 .rh-news-title {
   min-width: 0;
   overflow: hidden;
+  line-height: 1.3;
   color: var(--color-fd-foreground);
   text-overflow: ellipsis;
   white-space: nowrap;
