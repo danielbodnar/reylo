@@ -1,18 +1,16 @@
-import { DocsShell } from 'docs-kit/shell';
-import type { Root } from 'fumadocs-core/page-tree';
-import { Link } from 'react-router';
 import type { Route } from './+types/blog';
-import { Brand } from '@/components/brand';
+import { BlogIndex } from '@/components/blog-index';
 import { blogUrl, posts } from '@/lib/blog';
-import { blogMeta, ogHash } from '@/lib/blog-meta';
-import { docsTitle, githubUrl, pageGroups, pageLinks } from '@/lib/layout.shared';
-import { source } from '@/lib/source';
+import { blogMeta } from '@/lib/blog-meta';
+import { ogHash } from '@/lib/blog-og.server';
+import { docsTitle } from '@/lib/layout.shared';
+import { fetchStars } from '@/lib/stars';
 
 const description = 'What each release of Reylo changed.';
 
-/** Run at build time, when the page is rendered to a file (react-router.config.ts): the posts, newest first. */
+/** Run at build time, when the page is rendered to a file (react-router.config.ts): the posts, newest first, and the star count for the bar's GitHub pill. */
 export async function loader() {
-  return { posts, tree: source.getPageTree(), og: await ogHash() };
+  return { posts, og: await ogHash(), stars: await fetchStars() };
 }
 
 export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
@@ -20,32 +18,7 @@ export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
   return blogMeta({ title: docsTitle('Blog'), description, path: blogUrl, og: loaderData.og, type: 'website' });
 }
 
-/** The blog, at /blog: docs-kit's page, with the docs' page list on the left, and each post's title, date and description. */
+/** The blog, at /blog: the newest announcement as a card, then the releases (components/blog-index.tsx). */
 export default function Blog({ loaderData }: Route.ComponentProps) {
-  const { tree } = loaderData;
-  return (
-    <DocsShell
-      tree={tree as Root}
-      title="Blog"
-      toc={[]}
-      pages={{ groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: blogUrl }}
-      pageTitle="Blog"
-      brand={<Brand />}
-      github={githubUrl}
-      footer={<>Released under the MIT License. Copyright © 2026 Colin McDonnell.</>}
-    >
-      <p className="dk-subheader">{description}</p>
-      <ul className="blog-list not-prose">
-        {loaderData.posts.map((post) => (
-          <li key={post.slug}>
-            <Link to={`${blogUrl}/${post.slug}`}>
-              <span className="blog-list-title">{post.title}</span>
-              <time dateTime={post.date}>{post.shown}</time>
-            </Link>
-            <p>{post.description}</p>
-          </li>
-        ))}
-      </ul>
-    </DocsShell>
-  );
+  return <BlogIndex posts={loaderData.posts} stars={loaderData.stars} />;
 }

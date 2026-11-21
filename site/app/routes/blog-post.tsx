@@ -6,7 +6,8 @@ import { Brand } from '@/components/brand';
 import { getMDXComponents } from '@/components/mdx';
 import { blogUrl, posts } from '@/lib/blog';
 import { loadPost } from '@/lib/blog-content';
-import { blogMeta, ogHash } from '@/lib/blog-meta';
+import { blogMeta } from '@/lib/blog-meta';
+import { ogHash } from '@/lib/blog-og.server';
 import { docsTitle, githubUrl, pageGroups, pageLinks } from '@/lib/layout.shared';
 import { source } from '@/lib/source';
 
