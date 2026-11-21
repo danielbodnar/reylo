@@ -200,6 +200,60 @@
 }
 
 /* ── Heroes ── */
+
+/* The pill above the headline (NewsPill), to the latest launch's post: a "New" badge in the accent, its title, the one part that shrinks, ellipsized on a narrow window, and an arrow that moves on hover. */
+.rh-news {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1.75rem;
+  padding: 0.25rem 0.75rem 0.25rem 0.25rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--color-fd-card) 50%, transparent);
+  font-size: 0.875rem;
+  line-height: 1;
+  color: var(--color-fd-muted-foreground);
+  text-decoration: none;
+}
+
+.rh-news:hover {
+  border-color: color-mix(in oklab, var(--dk-accent) 50%, transparent);
+}
+
+/* The badge's capitals sat 1.1px high in it, measured by their ink, so its text sits a pixel lower: 5px over it, 3px under. */
+.rh-news-badge {
+  flex: none;
+  padding: 0.3125rem 0.625rem 0.1875rem;
+  border-radius: 999px;
+  background: var(--dk-accent);
+  font-family: var(--font-code);
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #160c08;
+}
+
+.rh-news-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-fd-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The arrow's ink sat 1.4px under the pill's centre, so a transform, which moves no layout, lifts it. */
+.rh-news-arrow {
+  flex: none;
+  transform: translateY(-1.375px);
+  transition: transform 150ms;
+}
+
+.rh-news:hover .rh-news-arrow {
+  transform: translate(2px, -1.375px);
+}
 .rh-h1 em {
   white-space: nowrap;
 }
