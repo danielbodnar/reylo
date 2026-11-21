@@ -269,7 +269,7 @@
 }
 
 .rh .ml-hero-words .rh-h1 {
-  --rh-h1: min(5rem, 14.6cqi);
+  --rh-h1: min(4.375rem, 12.8cqi);
 }
 
 .rh-hero-split {
@@ -554,7 +554,7 @@
    page. Every block of text and every box here is a whole number of pixels tall (ink-align.mjs,
    2026-11-19). */
 .rh .ml-h1 {
-  --rh-h1: clamp(2.25rem, 5.4vw, 5rem);
+  --rh-h1: clamp(2.25rem, 4.75vw, 4.375rem);
   font-size: var(--rh-h1);
   line-height: round(calc(var(--rh-h1) * 0.98), 1px);
 }
