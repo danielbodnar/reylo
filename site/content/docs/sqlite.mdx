@@ -851,7 +851,7 @@ Without `safeIntegers`, Bun rounds an integer past 2^53, so Reylo throws rather 
 
 ### Drizzle
 
-Pass Drizzle's `db`, made over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects. A transaction taken from it works too. Over D1, Drizzle has no transactions. Over `better-sqlite3`, `bun:sqlite` and Durable Objects, `.runSync()` works inside its transactions:
+Pass a Drizzle connection made over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects. A transaction taken from it works too. Over D1, Drizzle has no transactions. Over `better-sqlite3`, `bun:sqlite` and Durable Objects, `.runSync()` works inside its transactions:
 
 ```ts twoslash tab="main.ts"
 import { drizzle } from "drizzle-orm/better-sqlite3";
