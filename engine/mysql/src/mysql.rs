@@ -507,7 +507,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     let settled = settle(sql, lexed, &rewritten, parsed.as_ref(), &raw, views.as_ref());
     // An IF or a CASE that returns a BIT's bytes under another type ([`bit_results`]).
     let bits = match &parsed {
-        Some(Statement::Query(q)) => bit_results(q, &raw, host)?,
+        Some(Statement::Query(q)) => bit_results(q, &raw, views.as_ref(), host)?,
         // In an unread query, any column it computes as a BIT may hold a BIT's digits
         // ([`BIT_DIGITS`]), and where it calls IF or CASE, any column of a type such a call over a
         // BIT prepares as may hold the BIT's bytes.
@@ -523,6 +523,12 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     // a table's TINYINT(1) or BIT(1) column, by the prepare's.
     let truths = match &parsed {
         Some(Statement::Query(q)) => crate::mysql_shape::truths(q, raw.columns.len()),
+        _ => Vec::new(),
+    };
+    // The labels of the ENUM and SET columns a column reads through derived tables, WITH queries
+    // and UNIONs, which the prepare does not give (`mysql_labels`).
+    let traced_labels = match &parsed {
+        Some(Statement::Query(q)) => crate::mysql_labels::columns(q, &raw, host)?,
         _ => Vec::new(),
     };
     // The constants each column holds, where the query writes nothing else into it.
@@ -557,8 +563,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
                 },
             };
             // The prepare names an ENUM or a SET column without its labels.
-            let ty = match labelled_of(c) {
-                Some(labelled) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
+            let ty = match (traced_labels.get(position).cloned().flatten(), labelled_of(c)) {
+                (Some(traced), _) => traced,
+                (None, Some(labelled)) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
                 _ => ty,
             };
             let ty = if bits.contains(&position) { Type::unknown() } else { ty };
@@ -932,6 +939,10 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         None => pending = true,
     }
     match through_derived(q, count, views, host, dialect, depth) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    match through_recursive(q, count, views, host, dialect, depth) {
         Some(found) => not_null.extend(found),
         None => pending = true,
     }
@@ -1527,8 +1538,26 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
 ///
 /// So are the columns that call one of [`BIT_DIGITS`] and are prepared as a BIT: the value is the
 /// BIT's number in decimal digits, `65` for `b'01000001'` (measured on 8.4.11).
-fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> {
+///
+/// And so is a BIT that a view, a derived table or a WITH query computes, read as a column, by
+/// name or through a wildcard: it holds the BIT's bytes (`max`) or its digits (`coalesce`) by what
+/// computes it there, which the prepare does not say. The prepare names no schema for it, where it
+/// names the table's for a table's own column read the same way.
+fn bit_results(q: &Query, raw: &MysqlDescribe, views: Option<&HashSet<String>>, host: &Host) -> Lazy<Vec<usize>> {
     const BIT: u32 = 16;
+    /// Whether `e` reads a column and computes nothing.
+    fn reads_column(e: &Expr) -> bool {
+        match e {
+            Expr::Nested(inner) => reads_column(inner),
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+            _ => false,
+        }
+    }
+    // A host that reports no schema says only whether the column names a table that is no view.
+    let computed_elsewhere = |i: usize| {
+        let c = &raw.columns[i];
+        c.r#type == BIT && !c.schema.as_deref().map_or_else(|| table_column(c, views), |schema| !schema.is_empty())
+    };
     /// The results of an IF or a CASE, through the ones that are an IF or a CASE themselves;
     /// false where `e` is neither.
     fn results<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) -> bool {
@@ -1559,15 +1588,27 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
             _ => false,
         }
     }
+    // A query in parentheses is the query inside them: its columns and their values are the same.
+    let mut q = q;
+    while let SetExpr::Query(inner) = q.body.as_ref() {
+        q = &**inner;
+    }
     let SetExpr::Select(select) = q.body.as_ref() else { return Some(Vec::new()) };
     if select.projection.len() != raw.columns.len() {
-        return Some(Vec::new());
+        // A wildcard's columns, which the select list's own expressions are not told from.
+        return Some((0..raw.columns.len()).filter(|&i| computed_elsewhere(i)).collect());
     }
     let mut found: Vec<(usize, &Expr)> = Vec::new();
     let mut bits: Vec<usize> = Vec::new();
     for (i, item) in select.projection.iter().enumerate() {
-        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else { continue };
-        if bit_digits(e) && raw.columns[i].r#type == BIT {
+        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else {
+            // A wildcard of one column.
+            if computed_elsewhere(i) {
+                bits.push(i);
+            }
+            continue;
+        };
+        if raw.columns[i].r#type == BIT && (bit_digits(e) || reads_column(e) && computed_elsewhere(i)) {
             bits.push(i);
             continue;
         }
@@ -1705,7 +1746,7 @@ fn outer_flags(q: &Query, host: &Host) -> Lazy<Vec<usize>> {
 /// make NULL. `count` is how many columns the query has.
 fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
     use crate::mysql_derived::{each_target, filler, standalone, wrapper};
-    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) {
+    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) || crate::mysql_derived::with_outlives_operand(q) {
         return Some(Vec::new());
     }
     // A table read whole, as the copy reads each view, proves nothing of its own: it is no target
@@ -1758,6 +1799,123 @@ fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, hos
             }
         }
     });
+    if !changed {
+        return Some(Vec::new());
+    }
+    let mut not_null = Vec::new();
+    match host.describe(&copy.to_string()) {
+        Some(Ok(d)) if Some(d.columns.len()) == count => not_null.extend(d.columns.iter().enumerate().filter(|(_, c)| c.flags & 1 != 0).map(|(i, _)| i)),
+        Some(_) => {}
+        None => pending = true,
+    }
+    match outer_flags(&copy, host) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    if pending {
+        None
+    } else {
+        Some(not_null)
+    }
+}
+
+/// The positions of the columns of a materialized query ([`crate::mysql_derived::materialized`])
+/// that the server flags NOT NULL once each reference to a recursive WITH query reads the columns
+/// the engine proves never NULL written so the server sees it
+/// ([`crate::mysql_derived::read_through`]): the server flags every column of such a query
+/// nullable, whatever its members are. A column is proven by induction over the query's rows:
+/// never NULL in its anchors, and never NULL in each recursive member where the rows the member
+/// reads hold no NULL in the columns proven, which the member's own statement says by reading the
+/// anchors' rows through [`crate::mysql_derived::hypothesis`]. A column some member fails for is
+/// dropped and the members are proven again, until every one holds. `count` is how many columns
+/// the query has.
+fn through_recursive(q: &Query, count: Option<usize>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
+    use crate::mysql_derived::{filler, hypothesis, members, read_through, reads_through};
+    let Some(with) = q.with.as_ref().filter(|w| w.recursive) else { return Some(Vec::new()) };
+    // Each WITH query is proven by statements of its own, which may prove those it reads again.
+    if with.cte_tables.len() > MAX_DERIVED || depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) || crate::mysql_derived::with_outlives_operand(q) {
+        return Some(Vec::new());
+    }
+    let query_of = |text: &str| match parse(dialect, text).ok().map(|mut v| (v.pop(), v.is_empty())) {
+        Some((Some(Statement::Query(q)), true)) => Some(*q),
+        _ => None,
+    };
+    let mut pending = false;
+    let (mut copy, mut changed) = (q.clone(), false);
+    for (k, cte) in with.cte_tables.iter().enumerate() {
+        let Some((anchors, recursive)) = members(cte) else { continue };
+        // The WITH queries before it that its members read.
+        let written = anchors.iter().chain(&recursive).map(|side| side.to_string()).collect::<Vec<_>>().join(" ");
+        let read = crate::mysql_derived::read_by(&with.cte_tables[..k], &written);
+        let earlier = (!read.is_empty()).then(|| ast::With { cte_tables: read, ..with.clone() });
+        let anchored = anchors.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" UNION ALL ");
+        let Some(anchor) = query_of(&earlier.as_ref().map_or_else(|| anchored.clone(), |w| format!("{w} {anchored}"))) else { continue };
+        let Some(proven) = prove(&anchor, None, views, host, dialect, depth + 1) else {
+            pending = true;
+            continue;
+        };
+        // The query's column names: its column list, or its first anchor's.
+        let names: Vec<String> = match cte.alias.columns.as_slice() {
+            [] => proven.columns.iter().map(|c| c.name.clone()).collect(),
+            listed => listed.iter().map(|c| c.name.value.clone()).collect(),
+        };
+        let distinct: HashSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+        if names.is_empty() || names.len() != proven.columns.len() || distinct.len() != names.len() {
+            continue;
+        }
+        let fillers: Vec<Option<&str>> = proven.columns.iter().map(filler).collect();
+        let mut held: Vec<bool> = proven.never_null(&proven.columns).iter().zip(&fillers).map(|((never, _), filler)| *never && filler.is_some()).collect();
+        let columns = |held: &[bool]| -> Vec<(String, Option<&str>)> { names.iter().zip(&fillers).zip(held).map(|((n, f), h)| (n.clone(), if *h { *f } else { None })).collect() };
+        let head = earlier.as_ref().map_or_else(|| "WITH ".to_string(), |w| format!("{w}, "));
+        let mut stable = false;
+        // Each round that does not hold drops a column, so as many rounds as columns settle it.
+        for _ in 0..=names.len() {
+            if !held.contains(&true) {
+                stable = true;
+                break;
+            }
+            let assumed = hypothesis(&cte.alias.name.value, &columns(&held), &anchored);
+            let mut next = held.clone();
+            let mut failed = false;
+            for member in &recursive {
+                let Some(statement) = query_of(&format!("{head}{assumed} {member}")) else {
+                    failed = true;
+                    break;
+                };
+                match prove(&statement, None, views, host, dialect, depth + 1) {
+                    Some(p) if p.columns.len() == names.len() => {
+                        for (i, (never, _)) in p.never_null(&p.columns).into_iter().enumerate() {
+                            next[i] &= never;
+                        }
+                    }
+                    Some(_) => failed = true,
+                    None => {
+                        pending = true;
+                        failed = true;
+                    }
+                }
+                if failed {
+                    break;
+                }
+            }
+            if failed {
+                break;
+            }
+            if next == held {
+                stable = true;
+                break;
+            }
+            held = next;
+        }
+        if !stable || !held.contains(&true) {
+            continue;
+        }
+        let Some(through) = query_of(&read_through(&cte.alias.name.value, &columns(&held))) else { continue };
+        changed |= reads_through(&mut copy, k, &cte.alias.name.value, &through);
+    }
+    if pending {
+        return None;
+    }
     if !changed {
         return Some(Vec::new());
     }

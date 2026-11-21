@@ -1,7 +1,7 @@
 /* ── Reylo's homepage (components/home-landing.tsx) ───────────────────────────
    On the Migrate landing's styles (`.ml-*` in app/global.css): its nav, install, windows and foot,
    with what the homepage adds: the star pill and its note, the hero's pair of windows, the docs'
-   inference card and "View schema" outside the docs, and the features. The windows stay dark on
+   inference card outside the docs, with a table's declaration on hover, and the features. The windows stay dark on
    either theme, as an editor is; the cards follow the theme, as the docs' do. */
 
 .rh {
@@ -23,38 +23,6 @@
 .rh-star-wrap {
   position: relative;
   display: inline-flex;
-}
-
-/* GitHub's star button, unstarred. Only the border warms on hover. */
-.rh-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4375rem;
-  height: 2.125rem;
-  padding: 0 0.875rem 0 0.625rem;
-  border: 1px solid var(--color-fd-border);
-  border-radius: 999px;
-  color: var(--color-fd-foreground);
-  font-size: 0.8125rem;
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  transition: border-color 0.15s;
-}
-
-.rh-pill:hover {
-  border-color: var(--color-fd-primary);
-}
-
-.rh-pill svg {
-  width: 1.0625rem;
-  height: 1.0625rem;
-}
-
-.rh-pill .rh-pill-star {
-  width: 0.875rem;
-  height: 0.875rem;
-  margin-left: 0.125rem;
-  color: var(--color-fd-muted-foreground);
 }
 
 /* The note's arrow tip is at (150, 3) in its box: the box's left edge 150px left of the pill's middle,
@@ -81,6 +49,23 @@
   stroke-width: 1.9;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+/* On a wide window, the note on the pill's right, in the margin past the nav, clear of the hero's
+   windows under the pill's left: the arrow's tip at (20, 3), rising from the note's start. */
+.rh-star-note-right {
+  display: none;
+}
+
+@media (min-width: 1420px) {
+  .rh-star-note-left {
+    display: none;
+  }
+
+  .rh-star-note-right {
+    display: block;
+    left: calc(50% - 20px);
+  }
 }
 
 .dark .rh-star-note {
@@ -178,20 +163,40 @@
   background: color-mix(in oklab, var(--color-fd-primary) 14%, transparent);
 }
 
-/* "View schema" under the card's right corner: the docs' (`.schema-query-*` in app/global.css), its
-   popover holding the schema as a code block. */
-.rh-schema-foot {
-  margin: 0.75rem 0.25rem 0 0;
-  line-height: 1.25rem;
+/* A table's name in a statement: a dotted underline, as Twoslash marks what it can show; on hover or
+   focus, its declaration in a popover under it (`TableHover`), on the page's body, following the
+   theme as the cards do. */
+.rh-ref {
+  cursor: help;
+  text-decoration: underline dotted color-mix(in oklab, currentColor 55%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.25em;
+  border-radius: 0.1875rem;
+  outline-offset: 1px;
 }
 
-.rh .schema-query-card .rh-schema {
-  padding: 1rem 1.25rem;
+.rh-ref:hover,
+.rh-ref:focus-visible {
+  text-decoration-color: currentColor;
+}
+
+.rh-decl {
+  position: absolute;
+  z-index: 50;
+  max-width: min(36rem, calc(100vw - 2rem));
+  max-height: min(28rem, 60vh);
+  overflow: auto;
   border: 1px solid var(--color-fd-border);
-  border-radius: 0.875rem;
-  background: var(--color-fd-secondary);
+  border-radius: 0.625rem;
+  background: var(--color-fd-popover, var(--color-fd-card));
+  box-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.45);
+}
+
+.rh-decl .rh-code {
   --rh-code: 0.75rem;
   --rh-lh: 1.25rem;
+  padding: 0.75rem 1rem;
+  overflow: visible;
 }
 
 /* ── Heroes ── */
@@ -210,7 +215,19 @@
 }
 
 .rh-hero-split {
-  padding-bottom: 4rem;
+  padding-top: 6rem;
+  padding-bottom: 6rem;
+}
+
+/* On a wide window, the hero fills the window under the 4rem nav, its content centred, up to 60rem
+   tall, so a tall window doesn't spread it out. */
+@media (min-width: 1024px) {
+  .rh-hero-split {
+    min-height: min(calc(100svh - 4rem), 60rem);
+    padding-top: 4rem;
+    padding-bottom: 4rem;
+    align-content: center;
+  }
 }
 
 /* The install and "Read the docs" side by side, and the button under the command only where the
@@ -261,8 +278,8 @@
 .rh-examples {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 7rem 3rem;
-  border-top: 1px solid var(--color-fd-border);
+  /* No rule above it: the hero's "Works with" row parts the two. */
+  padding: 4rem 3rem 7rem;
 }
 
 .rh-section-head {
@@ -287,8 +304,6 @@
 
 /* The card centred, between the names in the left gutter and a right gutter as wide. */
 .rh-ex {
-  /* The "View schema" line under the card, 32px: the list centres on the card above it. */
-  --rh-schema-foot: 2rem;
   display: grid;
   grid-template-columns: 11rem minmax(0, 1fr) 11rem;
   gap: 2.5rem;
@@ -302,18 +317,37 @@
   display: none;
 }
 
+/* At least as tall as the list of names beside it, the room past its own lines in the query, so the
+   card and the list end together; an example longer than the list grows the card past it. */
+.rh-ex-cards {
+  display: flex;
+  flex-direction: column;
+}
+
 .rh-ex-card[data-on] {
-  display: block;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.rh-ex-card > .rh-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+}
+
+.rh-ex-card > .rh-card > .rh-card-row {
+  flex: 1;
 }
 
 /* The list: the names in the left gutter, the picked one lit with the yellow rule the docs' sidebar uses. */
 .rh-ex-list {
   display: flex;
   flex-direction: column;
-  gap: 0.125rem;
-  /* Centred on the card, not on the card and the "View schema" line under it. */
-  align-self: center;
-  margin-bottom: var(--rh-schema-foot, 0px);
+  /* Spaced so the list is as tall as the longest card, Subqueries', and no card runs past it. */
+  gap: 0.5rem;
+  /* At the top of the card, which grows and shrinks with the picked example, so the names never move. */
+  align-self: start;
 }
 
 .rh-ex-list button {
@@ -355,8 +389,8 @@
 .rh-features {
   max-width: 1280px;
   margin: 0 auto;
-  padding: 7rem 3rem;
-  border-top: 1px solid var(--color-fd-border);
+  /* No rule above it: the hero's "Works with" row parts the two. */
+  padding: 4rem 3rem 7rem;
 }
 
 .rh-grid {

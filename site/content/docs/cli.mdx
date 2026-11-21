@@ -28,14 +28,14 @@ scoop install reylo
 docker run --rm -v "$PWD:/work" ghcr.io/reylosql/reylo migrate status
 ```
 
-To pin a version in a project, name it in mise's `mise.toml`, which every developer and CI job then installs with `mise install`:
+To pin a version, name it in mise's `mise.toml`. Every developer and CI job then installs it with `mise install`:
 
 ```toml title="mise.toml"
 [tools]
 "github:reylosql/reylo" = "0.8.0"
 ```
 
-The scripts take a version too, as `REYLO_VERSION=0.8.0`, and the image a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
+The scripts take `REYLO_VERSION=0.8.0`. The image takes a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
 
 Each command reads the database your project names, as the type check does:
 
@@ -65,7 +65,13 @@ Flags:
 
 ## `reylo analyze`
 
-Prints what Reylo infers for each statement ([Inference](/inference)).
+Prints what Reylo infers for each statement ([Inference](/inference)):
+
+```sh
+reylo analyze src/queries
+reylo analyze 'src/**/*.sql' --format json
+reylo analyze --sql 'select id, email from users'
+```
 
 ## `reylo generate`
 
@@ -99,6 +105,76 @@ Flags:
   -h, --help               Print this help
 ```
 
+### `init`
+
+Starts your migrations from an existing database:
+
+```sh
+reylo migrate init
+reylo migrate init --schema app
+```
+
+### `new`
+
+Writes the next migration, from your change to `schema.sql`:
+
+```sh
+reylo migrate new add_bio
+reylo migrate new add_bio --drop users.bio
+reylo migrate new add_bio --rename users.name=full_name
+reylo migrate new add_bio --blocking
+```
+
+### `dev`
+
+Takes your development database to your migrations, and writes the lock:
+
+```sh
+reylo migrate dev
+```
+
+### `deploy`
+
+Runs the lock's pending migrations, with no shadow database:
+
+```sh
+reylo migrate deploy
+reylo migrate deploy --dry-run
+```
+
+### `status`
+
+Checks that a database and your files are in step, changing nothing:
+
+```sh
+reylo migrate status
+reylo migrate status --url $PROD_URL
+```
+
+### `lock`
+
+Writes the lock from your database's history:
+
+```sh
+reylo migrate lock
+```
+
+### `history push`
+
+Records your migrations as run on a database that already has their schema:
+
+```sh
+reylo migrate history push --url $PROD_URL
+```
+
+### `history pull`
+
+Writes your migration files from a database's history:
+
+```sh
+reylo migrate history pull --url $PROD_URL
+```
+
 ## `reylo db`
 
 Push `schema.sql` to a development database, reset it, wipe it or read its schema. [Reylo Migrate](/migrate/docs#db-push) covers each command:
@@ -123,11 +199,47 @@ Flags:
   -h, --help               Print this help
 ```
 
+### `push`
+
+Takes your development database to `schema.sql`, with no migration:
+
+```sh
+reylo db push
+reylo db push --watch
+reylo db push --drop users.bio
+reylo db push --force
+```
+
+### `reset`
+
+Rebuilds your development database from your migrations:
+
+```sh
+reylo db reset
+```
+
+### `wipe`
+
+Deletes every row, keeping the schema and the history:
+
+```sh
+reylo db wipe
+```
+
+### `introspect`
+
+Prints your database's schema as SQL:
+
+```sh
+reylo db introspect
+reylo db introspect --schema app
+```
+
 ## `reylo run`
 
 Runs SQL on the database as written, outside any migration's history.
 
-It takes statements as text and files with `--file`, and runs the text first, then each file, each in the order given:
+It runs the statements you pass as text, then each `--file`, in order:
 
 ```terminal
 $ reylo run 'alter table users add column bio text'
@@ -140,7 +252,7 @@ On a SQLite file that isn't there, it refuses rather than make an empty database
 
 Serves the playground on this machine.
 
-The page is a query editor whose Params, Returns and errors are Reylo's analysis of the query against your project's database, at every keystroke. Nothing is run. It opens in your browser, or stays closed with `--no-open`, for a script or an agent, which reads the same analysis as JSON:
+The page is a query editor. It shows Reylo's analysis of the query against your database at every keystroke, without running it. The `--no-open` flag leaves the browser closed, for a script or an agent. Either reads the same analysis as JSON:
 
 ```text
 http://127.0.0.1:4983/?q=<sql>         the page, with a query in it

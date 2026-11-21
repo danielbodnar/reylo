@@ -1,7 +1,9 @@
-import { useState, type CSSProperties, type ReactNode } from 'react';
+import { createContext, useContext, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import data from 'virtual:home-examples';
 import { DATABASES, HOSTS } from './host-logos';
-import { FileIcon, GitHubIcon, Mark, starCount, VariadicMark } from './migrate-landing';
+import { StarPill } from './star-pill';
+import { FileIcon, Mark, VariadicMark } from './migrate-landing';
 import type { HomeExample, HomeVariant, Line } from '@/lib/home-examples';
 import { githubUrl, introUrl } from '@/lib/layout.shared';
 import './home-landing.css';
@@ -11,36 +13,33 @@ import './home-landing.css';
  * (components/migrate-landing.tsx, the `.ml` styles): a nav whose GitHub pill carries a handwritten
  * "Leave a star!"; a hero split in half, the words on the left and on the right a query and, under
  * it, the main.ts that imports it; the databases and hosts it works with; the Inference section's examples, each in the docs' inference card
- * (components/inference-card.tsx) with its schema behind "View schema", named in a list in the left
- * gutter; the features; and a closing call to action. Every statement and type is the docs' own,
+ * (components/inference-card.tsx), each table's name showing its declaration on hover, named in a list
+ * in the left gutter; the features; and a closing call to action. Every statement and type is the docs' own,
  * captured (lib/home-examples.ts). Nothing moves by itself, and nothing reads the scroll position.
  */
 
 type Dialect = 'postgres' | 'mysql' | 'sqlite';
 
-/** The examples the homepage shows, by the Inference section's anchors, in its order. */
-const SHOWN = ['left-joins', 'computed-columns', 'unique-keys', 'aggregates', 'window-functions', 'unions', 'json', 'json-schema'];
+/** The examples the homepage shows, by the Inference section's anchors, in its order; each card no taller than the list of their names. */
+const SHOWN = ['naming', 'left-joins', 'computed-columns', 'nullable-parameters', 'unique-keys', 'aggregates', 'window-functions', 'subqueries:2', 'returning-inserts', 'unions', 'json', 'json-schema', 'oneof'];
 const EXAMPLES = SHOWN.map((id) => data.examples.find((e) => e.id === id)).filter((e): e is HomeExample => !!e);
 
-/** Lines a card holds: its statement, its parameters (`void` for none) and its result. */
-const height = (v: HomeVariant) => v.sql.length + (v.params?.length ?? 1) + v.returns.length;
-/** The tallest card's, in any database: every statement is padded with blank lines to it, so every card is as tall and nothing under the cards moves as the reader picks another. */
-const TALLEST = Math.max(...EXAMPLES.flatMap((e) => Object.values(e.variants).map(height)));
-const padded = (v: HomeVariant): Line[] => [...v.sql, ...Array.from({ length: TALLEST - height(v) }, (): Line => [])];
 
 const DIALECT_NAMES: Record<Dialect, string> = { postgres: 'Postgres', mysql: 'MySQL', sqlite: 'SQLite' };
 
 export function HomeLanding({ stars }: { stars?: number }) {
   return (
-    <div className="ml rh">
-      <Nav stars={stars} />
-      <Hero />
-      <Logos />
-      <Examples />
-      <Features />
-      <End />
-      <Foot />
-    </div>
+    <TableHover>
+      <div className="ml rh">
+        <Nav stars={stars} />
+        <Hero />
+        <Logos />
+        <Examples />
+        <Features />
+        <End />
+        <Foot />
+      </div>
+    </TableHover>
   );
 }
 
@@ -66,33 +65,29 @@ function Nav({ stars }: { stars?: number }) {
   );
 }
 
-/** GitHub's star button, unstarred: the mark, an outline star and the count, one link to the repository. */
-function StarPill({ stars }: { stars?: number }) {
-  return (
-    <a className="rh-pill" href={githubUrl} aria-label={stars ? `Star Reylo on GitHub, ${stars} stars` : 'Star Reylo on GitHub'}>
-      <GitHubIcon />
-      <svg className="rh-pill-star" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-        <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.751.751 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Zm0 2.445L6.615 5.5a.75.75 0 0 1-.564.41l-3.097.45 2.24 2.184a.75.75 0 0 1 .216.664l-.528 3.084 2.769-1.456a.75.75 0 0 1 .698 0l2.77 1.456-.53-3.084a.75.75 0 0 1 .216-.664l2.24-2.183-3.096-.45a.75.75 0 0 1-.564-.41L8 2.694Z" />
-      </svg>
-      <span>{stars ? starCount(stars) : 'Star'}</span>
-    </a>
-  );
-}
-
 /**
  * "Leave a star!" in a hand, under the pill, and an arrow drawn from the end of it, sweeping right and
- * then up into the middle of the pill's underside. Drawn from the pill's own box (`.rh-star-note`), so
+ * then up into the middle of the pill's underside; on a wide window, mirrored onto the pill's right. Drawn from the pill's own box (`.rh-star-note`), so
  * it lands on the pill at every width; the nav scrolls away with the page, and the note with it.
  */
 function StarNote() {
   return (
-    <svg className="rh-star-note" viewBox="0 0 170 84" fill="none" aria-hidden="true">
-      <text x="62" y="62" textAnchor="end" transform="rotate(-4 62 62)">
-        Leave a star!
-      </text>
-      <path d="M 72 57 C 110 63, 144 36, 150 3" />
-      <path d="M 142 15 L 150 3 L 158 14" />
-    </svg>
+    <>
+      <svg className="rh-star-note rh-star-note-left" viewBox="0 0 170 84" fill="none" aria-hidden="true">
+        <text x="62" y="62" textAnchor="end" transform="rotate(-4 62 62)">
+          Leave a star!
+        </text>
+        <path d="M 72 57 C 110 63, 144 36, 150 3" />
+        <path d="M 142 15 L 150 3 L 158 14" />
+      </svg>
+      <svg className="rh-star-note rh-star-note-right" viewBox="0 0 170 84" fill="none" aria-hidden="true">
+        <text x="66" y="62" transform="rotate(-4 66 62)">
+          Leave a star!
+        </text>
+        <path d="M 58 57 C 34 60, 20 36, 20 3" />
+        <path d="M 12 14 L 20 3 L 28 15" />
+      </svg>
+    </>
   );
 }
 
@@ -153,19 +148,82 @@ function Install({ centered }: { centered?: boolean }) {
 
 /**
  * Highlighted lines, as lib/home-examples.ts tokenized them, each token in its colour by day and by
- * night (`.rh-tok` picks one; a window, dark on either theme, takes the night's).
+ * night (`.rh-tok` picks one; a window, dark on either theme, takes the night's). A table's name,
+ * where `tables` holds its declaration, is underlined, and shows the declaration on hover or focus.
  */
-function Code({ lines }: { lines: Line[] }) {
+function Code({ lines, tables }: { lines: Line[]; tables?: Record<string, Line[]> }) {
+  const hover = useContext(HoverContext);
   return lines.map((line, i) => (
     <span key={i} className="rh-line">
-      {line.map(([text, light, dark], j) => (
-        <span key={j} className="rh-tok" style={{ '--l': light, '--d': dark } as CSSProperties}>
-          {text}
-        </span>
-      ))}
+      {line.map(([text, light, dark, table], j) => {
+        const style = { '--l': light, '--d': dark } as CSSProperties;
+        const declaration = table ? tables?.[table] : undefined;
+        if (!declaration) {
+          return (
+            <span key={j} className="rh-tok" style={style}>
+              {text}
+            </span>
+          );
+        }
+        return (
+          <span
+            key={j}
+            className="rh-tok rh-ref"
+            style={style}
+            tabIndex={0}
+            aria-label={`${text}: show its declaration`}
+            onMouseEnter={(e) => hover.show(e.currentTarget, declaration)}
+            onMouseLeave={hover.hide}
+            onFocus={(e) => hover.show(e.currentTarget, declaration)}
+            onBlur={hover.hide}
+          >
+            {text}
+          </span>
+        );
+      })}
       {'\n'}
     </span>
   ));
+}
+
+/* ── A table's declaration, on hover ────────────────────────────────────── */
+
+const HoverContext = createContext<{ show: (at: HTMLElement, lines: Line[]) => void; hide: () => void }>({ show: () => {}, hide: () => {} });
+
+/**
+ * One popover for the page, as Twoslash shows a type: under the table's name, holding its `create
+ * table`. It sits on the page's body, since the card clips what overflows it; it stays while the
+ * pointer moves from the name into it, so a long declaration can be scrolled.
+ */
+function TableHover({ children }: { children: ReactNode }) {
+  const [shown, setShown] = useState<{ lines: Line[]; left: number; top: number } | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const keep = () => clearTimeout(timer.current);
+  const hide = () => {
+    keep();
+    timer.current = setTimeout(() => setShown(null), 120);
+  };
+  const show = (at: HTMLElement, lines: Line[]) => {
+    keep();
+    const box = at.getBoundingClientRect();
+    // As wide as the popover may be (its max-width), kept a gutter in from the window's right edge.
+    const width = Math.min(576, window.innerWidth - 32);
+    setShown({ lines, left: Math.max(16, Math.min(box.left - 14, window.innerWidth - width - 16)) + window.scrollX, top: box.bottom + 6 + window.scrollY });
+  };
+  return (
+    <HoverContext.Provider value={{ show, hide }}>
+      {children}
+      {shown &&
+        createPortal(
+          <div className="rh rh-decl" role="tooltip" style={{ left: shown.left, top: shown.top }} onMouseEnter={keep} onMouseLeave={hide}>
+            <pre className="rh-code">
+              <Code lines={shown.lines} />
+            </pre>
+          </div>,
+          document.body,
+        )}
+    </HoverContext.Provider>
+  );
 }
 
 /* ── The inference card ─────────────────────────────────────────────────── */
@@ -191,7 +249,7 @@ function Card({ variant, dialects, dialect, onDialect }: { variant: HomeVariant;
           </div>
         )}
         <pre className="rh-code">
-          <Code lines={padded(variant)} />
+          <Code lines={variant.sql} tables={variant.tables} />
         </pre>
       </div>
       <div className="rh-card-types">
@@ -208,24 +266,6 @@ function Card({ variant, dialects, dialect, onDialect }: { variant: HomeVariant;
           </pre>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** "View schema" under the card's right corner, the schema in a popover on hover, focus or a click: the docs' (components/schema-query.tsx). */
-function ViewSchema({ lines }: { lines: Line[] }) {
-  return (
-    <div className="schema-query-foot rh-schema-foot">
-      <span className="schema-query-link" tabIndex={0}>
-        View schema
-        <span className="schema-query-pop" role="dialog" aria-label="Schema">
-          <span className="schema-query-card not-prose">
-            <pre className="rh-code rh-schema">
-              <Code lines={lines} />
-            </pre>
-          </span>
-        </span>
-      </span>
     </div>
   );
 }
@@ -261,7 +301,6 @@ function Examples() {
             return (
               <div key={e.id} className="rh-ex-card" data-on={i === at || undefined}>
                 <Card variant={variant} dialects={Object.keys(e.variants) as Dialect[]} dialect={d} onDialect={setDialect} />
-                <ViewSchema lines={variant.schema ?? data.schemas[d] ?? []} />
               </div>
             );
           })}
@@ -290,13 +329,13 @@ function Hero() {
       </div>
       <div className="ml-hero-visual rh-import">
         <div className="ml-pair">
-          <div className="ml-win ml-editor" aria-hidden="true">
+          <div className="ml-win ml-editor">
             <div className="ml-bar">
               <FileIcon />
               get_author.sql
             </div>
             <pre className="rh-code">
-              <Code lines={data.intro.sql} />
+              <Code lines={data.intro.sql} tables={data.intro.tables} />
             </pre>
           </div>
           <div className="ml-win ml-under rh-import-ts" aria-hidden="true">
