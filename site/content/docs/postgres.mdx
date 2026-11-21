@@ -900,7 +900,7 @@ After five runs of a prepared statement, Postgres can switch to one generic plan
 
 ### `pg-promise`
 
-Pass the database object, or the context a task or transaction hands its callback:
+Pass the `db` that `pgp()` returns, or the context a task or transaction hands its callback:
 
 ```ts twoslash tab="main.ts"
 import pgPromise from "pg-promise";
@@ -966,7 +966,7 @@ From Bun 1.4.4, Reylo decodes the bytes Bun receives itself, so each type comes 
 
 ### PGlite
 
-Pass the database, or the transaction it hands its callback:
+Pass the `PGlite` instance, or the transaction it hands its callback:
 
 ```ts twoslash tab="main.ts"
 import { PGlite } from "@electric-sql/pglite";

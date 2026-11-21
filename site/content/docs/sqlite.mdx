@@ -617,7 +617,7 @@ select id, name, email from users where id = :id
 
 ### `better-sqlite3`
 
-Pass the database. It's synchronous, so `.runSync()` works too:
+Pass the connection `new Database()` opens. It's synchronous, so `.runSync()` works too:
 
 ```ts twoslash tab="main.ts"
 import Database from "better-sqlite3";
@@ -654,7 +654,7 @@ An integer past 2^53 comes back exact.
 
 ### `bun:sqlite`
 
-Pass the database. It's synchronous, so `.runSync()` works too:
+Pass the connection `new Database()` opens. It's synchronous, so `.runSync()` works too:
 
 ```ts twoslash tab="main.ts"
 import { Database } from "bun:sqlite";
@@ -691,7 +691,7 @@ An integer past 2^53 comes back exact with `intMode: "bigint"` or `"string"`. Wi
 
 ### Turso engine [#turso]
 
-Pass the database, or the transaction `.transactionAsync()` hands its callback. The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well:
+Pass the connection `connect()` resolves to, or the transaction `.transactionAsync()` hands its callback. The `Database` of `@tursodatabase/database/compat` is synchronous, so `.runSync()` works on it, inside its `db.transaction(fn)` as well:
 
 ```ts twoslash tab="main.ts"
 import { connect } from "@tursodatabase/database";
@@ -795,7 +795,7 @@ The storage rounds an integer past 2^53, so Reylo throws rather than return one,
 
 ### `sqlite3`
 
-Pass the database:
+Pass the connection `new sqlite3.Database()` opens:
 
 ```ts twoslash tab="main.ts"
 import sqlite3 from "sqlite3";
@@ -809,7 +809,7 @@ The driver rounds an integer past 2^53, so Reylo throws rather than return one, 
 
 ### `sqlite`
 
-Pass the database `open()` returns, which can run a transaction:
+Pass the connection `open()` resolves to, which can run a transaction:
 
 ```ts twoslash tab="main.ts"
 import { open } from "sqlite";
