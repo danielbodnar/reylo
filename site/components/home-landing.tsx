@@ -312,6 +312,22 @@ function Examples() {
 
 /* ── The hero ───────────────────────────────────────────────────────────── */
 
+/** The blog post (content/blog) the pill above the headline links: the latest launch, which a patch release never replaces. */
+const NEWS = { href: '/blog/reylo-migrate', title: 'Introducing Reylo Migrate — SQL-first schema and migrations' };
+
+/** Above the headline, a pill to the latest launch's post: a "New" badge, its title, which a narrow window ellipsizes, and an arrow. */
+function NewsPill() {
+  return (
+    <a className="rh-news" href={NEWS.href}>
+      <span className="rh-news-badge">New</span>
+      <span className="rh-news-title">{NEWS.title}</span>
+      <span className="rh-news-arrow" aria-hidden="true">
+        →
+      </span>
+    </a>
+  );
+}
+
 /**
  * The words on the left; on the right the intro's statement, and under it, indented, the main.ts that
  * imports it, with the type of `author` in a hover, as the Migrate landing lays its editor over its
@@ -321,6 +337,7 @@ function Hero() {
   return (
     <header className="ml-hero rh-hero-split">
       <div className="ml-hero-words">
+        <NewsPill />
         <h1 className="ml-h1 rh-h1">
           <span>Import SQL</span> <span>into TypeScript,</span> <em>fully typed</em>
         </h1>
