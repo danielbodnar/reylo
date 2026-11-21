@@ -102,7 +102,8 @@ $ reylo analyze queries/get_user.sql
         "type": {
           "kind": "text",
           "code_points": [[1, 1114111]],
-          "label": "text"
+          "size": { "max": 255 },
+          "label": "varchar"
         }
       },
       {
@@ -112,7 +113,8 @@ $ reylo analyze queries/get_user.sql
           "code_points": [[1, 1114111]],
           "label": "text"
         },
-        "nullable": true
+        "nullable": true,
+        "comment": "Shown on the profile page"
       }
     ]
   },
@@ -165,7 +167,12 @@ With `--format typescript`, it prints the parameters and what `.run()` resolves 
 ```terminal
 $ reylo analyze queries/get_user.sql --format typescript
 type Params = { id: number | bigint | string };
-type Returns = { id: bigint; email: string; bio: string | null } | null;
+type Returns = {
+  id: bigint;
+  email: string;
+  /** Shown on the profile page */
+  bio: string | null;
+} | null;
 ```
 
 <Rust>
