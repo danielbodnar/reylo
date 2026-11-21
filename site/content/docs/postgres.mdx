@@ -1035,7 +1035,7 @@ Drizzle Postgres ships in `drizzle-orm` from 1.0.0-rc.6. On Neon, import from `d
 
 ### Drizzle
 
-Pass Drizzle's `db`, made over `pg`, postgres.js, Neon, PGlite, `Bun.sql` or [Drizzle Postgres](#drizzle-postgres). A transaction or savepoint taken from it works too. Over Neon's HTTP driver, Drizzle has no transactions:
+Pass a Drizzle connection made over `pg`, postgres.js, Neon, PGlite, `Bun.sql` or [Drizzle Postgres](#drizzle-postgres). A transaction or savepoint taken from it works too. Over Neon's HTTP driver, Drizzle has no transactions:
 
 ```ts twoslash tab="main.ts"
 import { drizzle } from "drizzle-orm/node-postgres";

@@ -78,7 +78,7 @@ About the client:
 
 - The client answers through a promise, so use `.run()`, not `.runSync()`.
 - With the default `intMode`, libSQL throws a `RangeError` on an integer past 2^53. Set `intMode: "bigint"` to get it exact.
-- Drizzle's `db` over `@libsql/client` works too ([Drizzle](/sqlite#drizzle)).
+- A Drizzle connection over `@libsql/client` works too ([Drizzle](/sqlite#drizzle)).
 
 ## Local database
 

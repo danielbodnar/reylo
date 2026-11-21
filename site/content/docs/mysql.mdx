@@ -689,7 +689,7 @@ Bun loses the microseconds of a `DATETIME` before Reylo sees them. Before Bun 1.
 
 ### Drizzle
 
-Pass Drizzle's `db`, made over `mysql2` or PlanetScale, or a transaction or savepoint taken from it:
+Pass a Drizzle connection made over `mysql2` or PlanetScale, or a transaction or savepoint taken from it:
 
 ```ts twoslash tab="main.ts"
 import { drizzle } from "drizzle-orm/mysql2";
