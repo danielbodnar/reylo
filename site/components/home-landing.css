@@ -360,87 +360,54 @@
   text-wrap: balance;
 }
 
-/* The card centred, between the names in the left gutter and a right gutter as wide. */
+/* One card, centred, as wide as the docs' column: the examples' names as tabs across its top, in
+   rows the browser balances so no name sits alone on one, the picked one raised on a lighter pill;
+   the example's lede as a caption under the card. */
 .rh-ex {
-  display: grid;
-  grid-template-columns: 11rem minmax(0, 1fr) 11rem;
-  gap: 2.5rem;
-  max-width: var(--rh-max);
+  max-width: 47rem;
   margin: 0 auto;
 }
 
-/* The picked example alone, at its own height: the section grows and shrinks with it, and the
-   browser's scroll anchoring keeps whatever the reader is looking at from moving. */
-.rh-ex-card {
-  display: none;
+.rh-tabs {
+  padding: 0.5625rem 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+  text-align: center;
+  text-wrap: balance;
+  line-height: 1.875rem;
 }
 
-/* At least as tall as the list of names beside it, the room past its own lines in the query, so the
-   card and the list end together; an example longer than the list grows the card past it. */
-.rh-ex-cards {
-  display: flex;
-  flex-direction: column;
-}
-
-.rh-ex-card[data-on] {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-}
-
-.rh-ex-card > .rh-card {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-}
-
-.rh-ex-card > .rh-card > .rh-card-row {
-  flex: 1;
-}
-
-/* The list: the names in the left gutter, the picked one lit with the yellow rule the docs' sidebar uses. */
-.rh-ex-list {
-  display: flex;
-  flex-direction: column;
-  /* Spaced so the list is as tall as the longest card, Subqueries', and no card runs past it. */
-  gap: 0.5rem;
-  /* At the top of the card, which grows and shrinks with the picked example, so the names never move. */
-  align-self: start;
-}
-
-.rh-ex-list button {
-  position: relative;
-  padding: 0.375rem 0.75rem 0.375rem 1rem;
-  border-radius: 0.5rem;
-  text-align: left;
-  font-size: 0.9375rem;
-  line-height: 1.25rem;
+.rh-tabs button {
+  display: inline-block;
+  margin: 0 0.0625rem;
+  padding: 0.375rem 0.5625rem;
+  border-radius: 0.4375rem;
+  font-size: 0.8125rem;
+  line-height: 1;
+  white-space: nowrap;
   color: var(--color-fd-muted-foreground);
+  transition: color 120ms, background-color 120ms;
 }
 
-.rh-ex-list button:hover {
+.rh-tabs button:hover {
   color: var(--color-fd-foreground);
 }
 
-.rh-ex-list button.on {
+.rh-tabs button.on {
+  background: color-mix(in oklab, var(--color-fd-foreground) 9%, transparent);
   color: var(--color-fd-foreground);
-  background: var(--color-fd-secondary);
-  font-weight: 500;
 }
 
-.rh-ex-list button.on::before {
-  content: '';
-  position: absolute;
-  left: 0.3125rem;
-  top: 0.5rem;
-  bottom: 0.5rem;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--color-fd-primary);
+.rh-ex-caption {
+  margin: 0.875rem 0 0;
+  text-align: center;
+  font-size: 0.9375rem;
+  color: var(--color-fd-muted-foreground);
+  text-wrap: balance;
 }
 
-.dark .rh-ex-list button.on::before {
-  box-shadow: 0 0 8px rgb(255 184 0 / 0.65);
+.rh-ex-caption code {
+  font-size: 0.9em;
 }
 
 /* ── Features ── */
@@ -600,25 +567,6 @@
   .rh-examples,
   .rh-features {
     padding-inline: 1.25rem;
-  }
-
-  .rh-ex {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-
-  .rh-ex-list {
-    flex-direction: row;
-    overflow-x: auto;
-    gap: 0.25rem;
-  }
-
-  .rh-ex-list button {
-    flex: none;
-  }
-
-  .rh-ex-list button.on::before {
-    display: none;
   }
 
   .rh-grid {
