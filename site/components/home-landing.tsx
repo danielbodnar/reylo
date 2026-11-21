@@ -20,8 +20,8 @@ import './home-landing.css';
 
 type Dialect = 'postgres' | 'mysql' | 'sqlite';
 
-/** The examples the homepage shows, by the Inference section's anchors, in its order; each card no taller than the list of their names. */
-const SHOWN = ['naming', 'left-joins', 'computed-columns', 'nullable-parameters', 'unique-keys', 'aggregates', 'window-functions', 'subqueries:2', 'returning-inserts', 'unions', 'json', 'json-schema', 'oneof'];
+/** The examples the homepage shows, by the Inference section's anchors, in its order. Named parameters are left out: `:name` is Reylo's addition to SQL, not what Reylo infers. */
+const SHOWN = ['left-joins', 'computed-columns', 'nullable-parameters', 'unique-keys', 'aggregates', 'window-functions', 'subqueries:2', 'returning-inserts', 'unions', 'json', 'json-schema', 'oneof'];
 const EXAMPLES = SHOWN.map((id) => data.examples.find((e) => e.id === id)).filter((e): e is HomeExample => !!e);
 
 
@@ -188,9 +188,10 @@ function TableHover({ children }: { children: ReactNode }) {
  * right of its label's line where the example has more than one database, then Params and Returns in
  * a band under it.
  */
-function Card({ variant, dialects, dialect, onDialect }: { variant: HomeVariant; dialects: Dialect[]; dialect: Dialect; onDialect: (d: Dialect) => void }) {
+function Card({ variant, dialects, dialect, onDialect, tabs }: { variant: HomeVariant; dialects: Dialect[]; dialect: Dialect; onDialect: (d: Dialect) => void; tabs?: ReactNode }) {
   return (
     <div className="rh-card">
+      {tabs}
       <div className="rh-card-row">
         <div className="rh-card-label">Query</div>
         {dialects.length > 1 && (
@@ -226,14 +227,30 @@ function Card({ variant, dialects, dialect, onDialect }: { variant: HomeVariant;
 
 /* ── The examples ───────────────────────────────────────────────────────── */
 
+/** A line of prose with its inline code, as the docs write it in backticks. */
+function Prose({ text }: { text: string }) {
+  return text.split(/(`[^`]+`)/).map((part, i) => (part.startsWith('`') ? <code key={i}>{part.slice(1, -1)}</code> : part));
+}
+
 /**
- * The Inference section's examples, one inference card at a time, centred between the names in the
- * left gutter and a right gutter as wide. The reader picks one; none turns by itself.
+ * The Inference section's examples, in one inference card: their names as tabs across its top, the
+ * rows balanced so no name sits alone on one, and the picked example's lede as a caption under it.
+ * The card is as tall as its example needs. The reader picks one; none turns by itself.
  */
 function Examples() {
   const [at, setAt] = useState(0);
   const [dialect, setDialect] = useState<Dialect>('postgres');
-  const shownDialect = (e: HomeExample): Dialect => (e.variants[dialect] ? dialect : (Object.keys(e.variants)[0] as Dialect));
+  const example = EXAMPLES[at]!;
+  const shown: Dialect = example.variants[dialect] ? dialect : (Object.keys(example.variants)[0] as Dialect);
+  const tabs = (
+    <div className="rh-tabs" role="tablist" aria-label="Examples">
+      {EXAMPLES.map((e, i) => (
+        <button key={e.id} type="button" role="tab" aria-selected={i === at} className={i === at ? 'on' : undefined} onClick={() => setAt(i)}>
+          {e.title}
+        </button>
+      ))}
+    </div>
+  );
   return (
     <section className="rh-examples">
       <header className="rh-section-head">
@@ -241,24 +258,10 @@ function Examples() {
         <p>Parameters, columns, nullability, cardinality and nested JSON shapes, from your database's own analysis of each query.</p>
       </header>
       <div className="rh-ex">
-        <div className="rh-ex-list" role="tablist" aria-label="Examples">
-          {EXAMPLES.map((e, i) => (
-            <button key={e.id} type="button" role="tab" aria-selected={i === at} className={i === at ? 'on' : undefined} onClick={() => setAt(i)}>
-              {e.title}
-            </button>
-          ))}
-        </div>
-        <div className="rh-ex-cards">
-          {EXAMPLES.map((e, i) => {
-            const d = shownDialect(e);
-            const variant = e.variants[d]!;
-            return (
-              <div key={e.id} className="rh-ex-card" data-on={i === at || undefined}>
-                <Card variant={variant} dialects={Object.keys(e.variants) as Dialect[]} dialect={d} onDialect={setDialect} />
-              </div>
-            );
-          })}
-        </div>
+        <Card variant={example.variants[shown]!} dialects={Object.keys(example.variants) as Dialect[]} dialect={shown} onDialect={setDialect} tabs={tabs} />
+        <p className="rh-ex-caption">
+          <Prose text={example.lede} />
+        </p>
       </div>
     </section>
   );
