@@ -19,6 +19,7 @@
     "@codemirror/state": "6.7.6",
     "@codemirror/view": "6.43.15",
     "@react-router/node": "8.5.0",
+    "@vercel/analytics": "2.0.1",
     "docs-kit": "link:./docs-kit",
     "fumadocs-core": "^16.15.1",
     "fumadocs-mdx": "^15.3.1",
