@@ -58,6 +58,7 @@ Cut each of these on sight. None carries a fact.
 ## Examples
 
 - **Real output only.** Every type, error and terminal line on a page is captured from the binary, never typed by hand: `nub run capture` for types and errors, a real run for terminal output. A command or flag that doesn't exist is never shown.
+- **A command's section shows it run.** The input it reads, the command, and what it prints, captured from a real run: the normal case first, then each flag that changes the output, then a failure. A list of invocations with no output is not an example.
 - **Realistic and calm.** Pick the case a reader actually has: switching from `feature-a` to `feature-b`, not back to `main`. Name things so they can't be mistaken for syntax: `rename_bio` and `tidy_columns`, never `about` or `tidy`.
 - **Show the power where the point is power.** An example under "the most advanced diff engine" must be one a lesser engine gets wrong: a view over a retyped column, a constraint added without blocking writes, a SQLite rebuild that keeps the rows of the tables that reference it. A one-line `alter table` sells nothing.
 - **Start simple, then build.** The first example of a page or a landing is the plainest one that works. The sophisticated ones come after the reader has the shape.
