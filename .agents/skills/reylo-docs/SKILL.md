@@ -86,7 +86,7 @@ Copy written by hand for a page goes in as written. Fix only a wrong fact or a p
 
 ## What ships when
 
-reylo.dev serves the `release` branch, which each release moves to its tag, so the live docs describe what npm serves. A docs change for a released feature goes live before the next release by being made on `release` itself: commit it in a worktree on `origin/release`, build the site there, push, then merge `release` into `main` at once. A commit on `release` that `main` doesn't have is dropped at the next release, which moves `release` to a commit of `main`. A change about anything unreleased stays on `main` until its release.
+reylo.dev serves the `release` branch, which each release moves to its tag, so the live docs describe what npm serves. A docs change for a released feature goes live before the next release by being made on `release` itself: commit it in a worktree on `origin/release`, build the site there, push, then merge `release` into `main` at once. A commit on `release` that `main` doesn't have is dropped at the next release, which moves `release` to a commit of `main`. A change about anything unreleased stays on `main` until its release. A feature that has shipped but not been announced is treated the same way: its docs, skill text and mentions wait, on a draft pull request, for the release that announces it. Some ship this way on purpose, such as the Rust support behind `SHOW_RUST`; check before documenting a feature no page mentions yet.
 
 ## Before a change lands
 
