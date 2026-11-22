@@ -1013,7 +1013,7 @@ import getUser from "./pg_get_user.sql";
 const user = await getUser.run(sql, { id: 1 });
 ```
 
-The package is deprecated on npm: Reylo's types accept its client, but Reylo's tests don't run it.
+The package is deprecated on npm, but Reylo still runs on it, with `createPool()` and `createClient()` too.
 
 ### Drizzle Postgres
 
