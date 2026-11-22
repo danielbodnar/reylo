@@ -69,7 +69,7 @@
 }
 
 .dark .rh-star-note {
-  filter: drop-shadow(0 0 5px rgb(255 184 0 / 0.5));
+  filter: var(--saber-glow);
 }
 
 /* ── Code ── */
@@ -360,9 +360,9 @@
   text-wrap: balance;
 }
 
-/* The blade under each heading, 72 by 3px, about a lightsaber's proportions: the yellow by day, and by
-   night a white core in yellow light, as the comparison page's frame is lit. Its margins put it
-   halfway, by eye, between the heading's baseline and the sentence's lowercase under it. */
+/* The blade under each heading, 72 by 3px, about a lightsaber's proportions, in the yellow, lit by
+   night with the wordmark's glow (--saber-glow, app/global.css). Its margins put it halfway, by eye,
+   between the heading's baseline and the sentence's lowercase under it. */
 .rh-blade {
   display: block;
   width: 4.5rem;
@@ -373,12 +373,7 @@
 }
 
 .dark .rh-blade {
-  background: #fffbea;
-  box-shadow:
-    0 0 1px 0.5px #fff4c4,
-    0 0 3px 1px #ffe55c,
-    0 0 7px 1px #ffc81f,
-    0 0 13px 0 rgb(255 184 0 / 0.28);
+  filter: var(--saber-glow);
 }
 
 .rh-section-head .rh-blade + p {
