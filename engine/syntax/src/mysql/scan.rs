@@ -3,7 +3,7 @@
 //! few phrases are one token. Comments, and the markers of a `/*! … */` comment whose text the
 //! server runs, are trivia. Reylo's `:name` placeholder is a parameter marker, as `?` is.
 
-use super::generated::{tok, CHAR_TOKENS, FUNCTIONS, HINTED, KEYWORDS, NAMES_BEFORE_PAREN, WINDOW_FUNCTIONS};
+use super::generated::{tok, CHAR_TOKENS, FUNCTIONS, HINTED, KEYWORDS, NAMES_BEFORE_PAREN, TIDB_NAMES, WINDOW_FUNCTIONS};
 use crate::lalr::Lexeme;
 
 /// How the server reads a statement: the `sql_mode` flags that change its tokens, and its version,
@@ -504,12 +504,12 @@ impl<'t> Scanner<'t> {
             return tok::identifier;
         }
         let upper = String::from_utf8_lossy(text).to_ascii_uppercase();
-        let mut next = end;
-        if self.opts.ignore_space {
-            while next < self.z.len() && is_space(self.z[next]) {
-                next += 1;
-            }
+        let mut spaced = end;
+        while spaced < self.z.len() && is_space(self.z[spaced]) {
+            spaced += 1;
         }
+        // A built-in's name is one only right before its parenthesis, unless IGNORE_SPACE.
+        let next = if self.opts.ignore_space { spaced } else { end };
         if self.z.get(next) == Some(&b'(') {
             if let Some(sym) = lookup(&FUNCTIONS, &upper) {
                 return sym;
@@ -518,7 +518,51 @@ impl<'t> Scanner<'t> {
                 return tok::identifier;
             }
         }
+        if TIDB_NAMES.binary_search(&upper.as_str()).is_ok() && self.z.get(self.past_trivia(end)) == Some(&b'(') {
+            return tok::identifier;
+        }
         lookup(&KEYWORDS, &upper).or_else(|| lookup(&WINDOW_FUNCTIONS, &upper)).unwrap_or(tok::identifier)
+    }
+
+    /// Where the text goes on after `at`, past spaces and comments: a stored function's name may
+    /// have either before its parenthesis. A `/*+` comment after a name is no hint, and a `/*!`
+    /// comment is text where the server's version runs it and it holds any.
+    fn past_trivia(&self, mut at: usize) -> usize {
+        let z = self.z;
+        loop {
+            while at < z.len() && is_space(z[at]) {
+                at += 1;
+            }
+            let rest = &z[at..];
+            if rest.starts_with(b"/*!") {
+                let (digits, wanted) = comment_version(&rest[3..]);
+                if wanted <= self.opts.version {
+                    // One the server runs is text, unless it holds nothing but spaces.
+                    let mut body = at + 3 + digits;
+                    while body < z.len() && is_space(z[body]) {
+                        body += 1;
+                    }
+                    if !z[body..].starts_with(b"*/") {
+                        return at;
+                    }
+                    at = body + 2;
+                    continue;
+                }
+                match skipped_comment(z, at + 3 + digits) {
+                    Some(end) => at = end,
+                    None => return z.len(),
+                }
+            } else if rest.starts_with(b"/*") {
+                match rest[2..].windows(2).position(|w| w == b"*/") {
+                    Some(n) => at += 2 + n + 2,
+                    None => return z.len(),
+                }
+            } else if rest.starts_with(b"#") || (rest.starts_with(b"--") && rest.get(2).is_none_or(|&c| is_space(c))) {
+                at = rest.iter().position(|&c| c == b'\n').map_or(z.len(), |n| at + n);
+            } else {
+                return at;
+            }
+        }
     }
 
     /// A token's symbol from its kind (`Lex` before its phrases).
