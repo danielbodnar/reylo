@@ -146,7 +146,7 @@ function Row({ n, title, visual, flip, children }: { n: number; title: ReactNode
   );
 }
 
-const INSTALLS = { brew: 'brew install reylosql/tap/reylo', npm: 'npm install reylo', curl: 'curl -fsSL https://reylo.dev/install.sh | sh' } as const;
+const INSTALLS = { brew: 'brew install reylosql/tap/reylo', npm: 'npm i reylo', curl: 'curl -fsSL https://reylo.dev/install.sh | sh' } as const;
 
 /** The install command, by package manager: the managers as tabs over its upper left, a copy button at its end, and the docs button, filled with the yellow. `centered` is the closing call to action's, which centres the two side by side. */
 function Install({ centered }: { centered?: boolean }) {

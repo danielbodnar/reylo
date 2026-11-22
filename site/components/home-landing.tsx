@@ -78,7 +78,7 @@ export function HomeLanding({ stars }: { stars?: number }) {
 
 /* ── The install ────────────────────────────────────────────────────────── */
 
-const INSTALL = 'npm add reylo';
+const INSTALL = 'npm i reylo';
 
 function CopyIcon({ done }: { done: boolean }) {
   return done ? (
