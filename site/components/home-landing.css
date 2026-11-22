@@ -552,15 +552,11 @@
 }
 
 /* ── Optical nudges, each measured with ink-align.mjs on 2026-11-19 ──
-   main.ts's icon in hero B sat 1.06px low (a 0.5px lift lands it, the svg snapping on its own); the
-   arrow of a centred "Get started" (4rem tall, 17px) 1.3px low. */
+   main.ts's icon in hero B sat 1.06px low (a 0.5px lift lands it, the svg snapping on its own). */
 .rh-import-ts .ml-bar svg {
   translate: 0 -0.5px;
 }
 
-.rh .ml-centered .ml-docs-primary svg {
-  translate: 0 -0.94px;
-}
 
 /* ── Narrower windows ── */
 @media (max-width: 1023px) {

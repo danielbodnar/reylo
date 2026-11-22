@@ -538,6 +538,35 @@
   color: var(--color-fd-muted-foreground);
 }
 
+/* The button at the foot of a callout, as the intro's Reylo Migrate callout ends: the yellow, with
+   dark text in both themes, and none of a prose link's rule or glow. */
+#nd-page .dk-callout-body a.callout-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* A pixel over 2.5rem lowers the label the 0.44px it sat high (ink-align.mjs, 2026-11-22). */
+  height: calc(2.5rem + 1px);
+  margin-top: 0.875rem;
+  padding: 0 1.125rem;
+  border-radius: 0.625rem;
+  background: var(--dk-accent);
+  color: hsl(0 0% 6%);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: none;
+}
+
+/* The arrow sat 1.5px low against the label's capitals. */
+#nd-page .dk-callout-body a.callout-cta > span {
+  translate: 0 -1.5px;
+}
+
+#nd-page .dk-callout-body a.callout-cta:hover {
+  color: hsl(0 0% 6%);
+  filter: brightness(1.08);
+}
+
 /* ── Saber light ───────────────────────────────────────────────────────────────
    By night the yellow gives off a little light, as a lightsaber's blade does: a soft gold glow
    under each link's rule and around the step numbers, the callout's bulb and the "Leave a star!"
@@ -1253,6 +1282,10 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   font-size: 1rem;
 }
 
+.ml-hero .ml-docs-primary {
+  height: calc(3.5rem - 1px);
+}
+
 .ml-hero-visual .ml-code,
 .ml-hero-visual .ml-term {
   font-size: 0.9375rem;
@@ -1696,7 +1729,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   text-align: center;
 }
 
+/* A pixel shorter than the command beside it, which it would otherwise outweigh: a solid yellow
+   reads taller than an outlined box of the same height. The margins keep it centred on the box. */
 .ml-docs-primary {
+  height: calc(4rem - 1px);
+  margin-block: 0.5px;
   border-color: var(--color-fd-primary);
   background: var(--color-fd-primary);
   color: hsl(0 0% 6%);
@@ -1720,6 +1757,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-centered .ml-big {
   justify-content: center;
+}
+
+/* The arrow of a centred "Read the docs" (4rem tall, 17px) sat 1.3px low on both landings. */
+.ml-centered .ml-docs-primary svg {
+  translate: 0 -0.94px;
 }
 
 .ml-docs-link {
