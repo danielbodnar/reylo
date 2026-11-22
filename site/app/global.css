@@ -568,11 +568,10 @@
 }
 
 /* The one glow of the yellow marks by night: the wordmark, "Leave a star!" and the homepage's heading
-   blades. A tight gold light, then a softer amber one, between the old 4px glow and the blades' first,
-   brighter lighting, so all of them read as one light. */
+   blades. A bright near light, a gold one, then a wide amber falloff, so all of them read as one light. */
 :root {
-  --saber-glow: drop-shadow(0 0 2px rgb(255 200 31 / 0.55)) drop-shadow(0 0 7px rgb(255 184 0 / 0.4));
-  --saber-text-glow: 0 0 3px rgb(255 200 31 / 0.45), 0 0 10px rgb(255 184 0 / 0.45);
+  --saber-glow: drop-shadow(0 0 2px rgb(255 214 60 / 0.8)) drop-shadow(0 0 6px rgb(255 200 31 / 0.6)) drop-shadow(0 0 14px rgb(255 184 0 / 0.35));
+  --saber-text-glow: 0 0 2px rgb(255 214 60 / 0.6), 0 0 8px rgb(255 200 31 / 0.55), 0 0 18px rgb(255 184 0 / 0.3);
 }
 
 /* ── Saber light ───────────────────────────────────────────────────────────────
@@ -624,13 +623,13 @@
 .reylo-compare-scroll {
   overflow-x: auto;
   margin-inline: -18px;
-  padding: 24px 18px 20px;
+  padding: 30px 18px 20px;
 }
 
 .reylo-compare-grid {
   --reylo-lw: 138px;
   --reylo-g1: 10px;
-  --reylo-rw: 84px;
+  --reylo-rw: 96px;
   --reylo-g2: 16px;
   --reylo-rows: 46px;
   display: grid;
@@ -644,7 +643,7 @@
   .reylo-compare-grid {
     --reylo-lw: 176px;
     --reylo-g1: 14px;
-    --reylo-rw: 104px;
+    --reylo-rw: 122px;
     --reylo-g2: 24px;
     --reylo-rows: 50px;
     font-size: 15px;
@@ -671,7 +670,7 @@
     left: 0;
     z-index: 3;
     background: var(--color-fd-background);
-    margin-block: -24px -20px;
+    margin-block: -30px -20px;
   }
 
   .reylo-compare-row-label,
@@ -872,7 +871,8 @@ a.reylo-compare-name:hover {
 .reylo-compare-frame {
   position: relative;
   z-index: 1;
-  margin: -14px 0 -6px;
+  /* Room around Reylo's wordmark: 19px of column on each side of it, and 20px above. */
+  margin: -20px 0 -6px;
   border: 2px solid var(--dk-accent);
   border-radius: 12px;
   background: color-mix(in srgb, var(--dk-accent) 5%, transparent);
