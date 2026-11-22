@@ -397,8 +397,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "e" => {
                 let labels: Vec<String> = serde_json::from_str(r.text("labels")).unwrap_or_default();
                 let list = labels.iter().map(|l| literal(l)).collect::<Vec<_>>().join(", ");
-                // A label removed or moved changes every column of the type, which blocks what is on them.
-                (format!("enum ({list})"), format!("create type {name} as enum ({list})"), Change::Alter { blocks: true })
+                // A label removed or moved makes the type again, changing every column of it, which
+                // blocks what is on them (the alterer's `remakes`); a label added blocks nothing.
+                (format!("enum ({list})"), format!("create type {name} as enum ({list})"), Change::Alter { blocks: false })
             }
             "d" => {
                 let def = format!(
@@ -904,6 +905,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             };
             let from_parent = if c.flag("inherited") || partition { "inherited" } else { "" };
             table_columns.push(format!("{TABLE_COLUMN}{col_id}{SEP}{held}{SEP}{}{SEP}alter table {name} add column {} {added}{SEP}{}{SEP}{from_parent}", c.text("name"), c.text("name"), c.text("nn_name")));
+            // Each column below changes in place. Only a change of its type or collation is refused
+            // under a view, rule, policy or trigger on it, which the alterer's `remakes` says; a
+            // default, a not null, an identity or a generated expression changes under them.
             // A typed table's columns are its type's attributes, made, changed and dropped through
             // the type; a default or a not null of one is the table's own, written `with options`.
             if let Some(ty) = r.get("of_type") {
@@ -920,7 +924,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     // Where the type gains the attribute under the table, what the table says of it.
                     create: [c.get("def").filter(|_| c.text("generated").is_empty() && c.text("identity").is_empty()).map(|d| format!("{at} set default {d}")), c.flag("notnull").then(|| format!("{at} set not null"))].into_iter().flatten().collect(),
                     inline: true,
-                    change: Change::Alter { blocks: true },
+                    change: Change::Alter { blocks: false },
                     extra: vec![TYPED.to_string()],
                     deps: [format!("column {ty}.{}", c.text("name"))].into_iter().collect(),
                     ..Object::default()
@@ -989,7 +993,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     deps: if c.flag("inherited") && !partition { holders(c.text("name")) } else { BTreeSet::new() },
                     drop: vec![if kind == "c" { format!("alter type {name} drop attribute {}{cascade}", c.text("name")) } else { format!("alter table {name} drop column {}", c.text("name")) }],
                     inline: true,
-                    change: Change::Alter { blocks: true },
+                    change: Change::Alter { blocks: false },
                     ..Object::default()
                 });
                 // Its identity's sequence, logged otherwise than its table or commented, which the
@@ -1037,7 +1041,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     owner: Some(id.clone()),
                     def: def.clone(),
                     inline: true,
-                    change: Change::Alter { blocks: true },
+                    change: Change::Alter { blocks: false },
                     extra: vec!["inherited".to_string(), format!("{PARENTS}{}", r.text("parent")), format!("{TABLE_PARENTS}{}", r.text("parent"))],
                     deps: holders(c.text("name")),
                     ..Object::default()
@@ -1070,7 +1074,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     owner: Some(id.clone()),
                     def: def.clone(),
                     inline: true,
-                    change: Change::Alter { blocks: true },
+                    change: Change::Alter { blocks: false },
                     extra: std::iter::once("partition".to_string()).chain((kind == "p").then(|| "partitioned".to_string())).chain(c.get("nn_name").map(|n| format!("not null name {n}"))).collect(),
                     deps: r.get("parent").map(|p| format!("column {p}.{}", c.text("name"))).into_iter().collect(),
                     ..Object::default()
@@ -2353,8 +2357,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     }
     // What names an enum's label uses it, as a default or a check does: a view, a policy, a
     // trigger's condition, an index's predicate, a function, and a partition's bound over a column
-    // of the type. A label added in the plan that one of them uses can't be added in place: Postgres
-    // refuses a value added in the transaction that uses it.
+    // of the type. A label added in the plan that one of them uses is committed before them, a
+    // migration of its own: Postgres refuses a value in the transaction that adds it.
     // The columns a partitioned table is partitioned by.
     let mut keys: BTreeSet<String> = BTreeSet::new();
     for r in db
@@ -2381,8 +2385,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
         }
     }
-    // An enum a table is partitioned by can't be made again under it: a label its partitions use
-    // is added and committed before them, and each partition waits for the type's change.
+    // A partition of a table partitioned by an enum waits for the type's change, which commits a
+    // label its bound names before it.
     let mut keyed: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for o in s.objects.values().filter(|o| keys.contains(&o.id)) {
         for t in o.deps.iter().filter(|d| enum_type(d)) {
@@ -2403,9 +2407,6 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         if let Some(o) = s.objects.get_mut(&id) {
             o.deps.extend(types);
         }
-    }
-    for t in keyed.into_values().flatten() {
-        uses.entry(t).or_default().push(PARTITION_KEY.to_string());
     }
     for (id, lines) in uses {
         if let Some(o) = s.objects.get_mut(&id) {
@@ -3263,7 +3264,7 @@ const ATTRIBUTE: &str = "attribute of ";
 /// Whether a line an enum carries is one of its columns (its table, name, type and default), not
 /// what else it carries.
 fn is_column_line(l: &str) -> bool {
-    ![AROUND, AGAIN, USES, DOMAIN, ATTRIBUTE, PARTITION_KEY, TYPED_TABLE, HELD_COLUMN].iter().any(|p| l.starts_with(p))
+    ![AROUND, AGAIN, USES, DOMAIN, ATTRIBUTE, TYPED_TABLE, HELD_COLUMN].iter().any(|p| l.starts_with(p))
 }
 
 /// What an enum carries of a column of it a table holds from another (a partition's, a child's):
@@ -3275,9 +3276,6 @@ const HELD_COLUMN: &str = "held column ";
 /// converted as any column, and is of the type again after: a typed table's column changes only
 /// with its type's attribute, which takes no conversion through text.
 const TYPED_TABLE: &str = "typed table ";
-
-/// What an enum a table is partitioned by carries: it can't be made again.
-const PARTITION_KEY: &str = "partition key";
 
 /// A column of a table as the table carries it: its id, what holds it (`own`, `inherited`,
 /// `partition`, `typed`), its name and the statement that adds it.
@@ -3868,13 +3866,12 @@ struct EnumChange {
     before: Vec<String>,
     after: Vec<String>,
     /// Whether the target uses a label it adds (a default, a check), which a label added in a
-    /// transaction can't be in it, as one of a type made in it can.
+    /// transaction can't be in it: the labels are added and committed before what uses them, a
+    /// migration of its own, rather than the type made again, which copies every table with a
+    /// column of it.
     used: bool,
     /// Whether a label goes or moves.
     reorders: bool,
-    /// Whether a table is partitioned by the type, which then stays: a label used is added, and
-    /// committed before what uses it, a migration of its own.
-    keyed: bool,
 }
 
 impl EnumChange {
@@ -3884,13 +3881,12 @@ impl EnumChange {
         let kept: Vec<&String> = b.iter().filter(|l| a.contains(l)).collect();
         let used = b.iter().filter(|l| !a.contains(l)).any(|l| to.extra.iter().filter(|x| !x.starts_with(AGAIN)).any(|x| names_label(x, l)));
         let reorders = kept.len() != a.len() || kept.iter().zip(&a).any(|(x, y)| *x != y);
-        let keyed = to.extra.iter().any(|l| l == PARTITION_KEY);
-        EnumChange { before: a, after: b, used, reorders, keyed }
+        EnumChange { before: a, after: b, used, reorders }
     }
 
     /// Whether the type is made again, rather than given its new labels in place.
     fn remakes(&self) -> bool {
-        (self.used && !self.keyed) || self.reorders
+        self.reorders
     }
 }
 
@@ -3996,6 +3992,20 @@ impl Alterer for PostgresAlterer {
         static ROUTINE: std::sync::LazyLock<regex::Regex> =
             std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)^create\s+(or\s+replace\s+)?(function|procedure|operator)\b").expect("a valid pattern"));
         static SQL_BODY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)\blanguage\s+sql\b").expect("a valid pattern"));
+        // A transaction of nothing but new enum labels joins the one before it, which they need not
+        // wait for: the labels of two enums the plan uses commit together, one migration before
+        // what uses them.
+        let mut k = 0;
+        while let Some(at) = statements[k..].iter().position(|s| s == super::COMMIT).map(|p| p + k) {
+            let end = statements[at + 1..].iter().position(|s| s == super::COMMIT).map(|p| p + at + 1);
+            let labels_only = end.is_some_and(|end| end > at + 1 && statements[at + 1..end].iter().all(|s| s.starts_with("--") || (s.starts_with("alter type ") && s.contains(" add value "))));
+            if labels_only {
+                statements.remove(at);
+                k = at;
+            } else {
+                k = at + 1;
+            }
+        }
         let checked = |s: &String| ROUTINE.is_match(s) && SQL_BODY.is_match(s) && !s.to_ascii_lowercase().contains("begin atomic");
         // One alone may read what the plan drops later or never makes (a table `schema.sql` dropped
         // after it), which the server checked as `schema.sql` ran.
@@ -4636,7 +4646,7 @@ impl Alterer for PostgresAlterer {
                         },
                     }
                 }
-                if change.used && change.keyed {
+                if change.used {
                     out.push(super::COMMIT.to_string());
                 }
                 Some(out)

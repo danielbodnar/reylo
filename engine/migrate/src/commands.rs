@@ -3321,11 +3321,15 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         }
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
-            if drafted.lock_safe {
-                log(&format!("{} Wrote {} migrations, so that none blocks writes to a table while it reads every row:", paint("green", "✓"), many.len()));
-            } else {
-                log(&format!("{} Wrote {} migrations, one per statement, since MySQL commits each DDL statement on its own:", paint("green", "✓"), many.len()));
-            }
+            // A file past one per commit is the lock-safe shape's.
+            let unblocking = drafted.lock_safe && many.len() > drafted.commits + 1;
+            let why = match (unblocking, drafted.commits > 0) {
+                (true, true) => "so that none blocks writes to a table while it reads every row, and none uses an enum value it adds",
+                (true, false) => "so that none blocks writes to a table while it reads every row",
+                (false, true) => "since Postgres can't use a new enum value in the migration that adds it",
+                (false, false) => "one per statement, since MySQL commits each DDL statement on its own",
+            };
+            log(&format!("{} Wrote {} migrations, {why}:", paint("green", "✓"), many.len()));
             for path in many {
                 log(&format!("    {path}"));
             }
@@ -3414,6 +3418,9 @@ struct Drafted {
     target: String,
     /// Whether its files are the lock-safe shape's (`locks`), rather than one per MySQL statement.
     lock_safe: bool,
+    /// Where its plan commits partway, each enum's labels before what uses them, a file ending at
+    /// each: how many times.
+    commits: usize,
     /// What it changes, a line each, as `changed_lines` writes it.
     changes: Vec<String>,
 }
@@ -4083,7 +4090,7 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 #[allow(clippy::type_complexity)]
 #[cfg(feature = "cli")]
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
-    let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false, changes: vec![] };
+    let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false, commits: 0, changes: vec![] };
     let mut db = Db::open(opts).await?;
     let mut problems = out_of_reach(&mut db, &opts.url).await?;
     problems.extend(unreadable_grants(&mut db, opts, files, Some(schema_sql)).await?);
@@ -4159,6 +4166,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         // reads them all is written in the shape that doesn't, as several files (`locks`).
         let existing = if d == Dialect::Postgres { crate::locks::existing_tables(shadows.db(c)).await? } else { Default::default() };
         let mut split = crate::locks::lock_safe(&plan, &existing);
+        let commits = plan.statements.iter().filter(|s| *s == crate::diff::COMMIT).count();
         // The plan runs on the replay as `deploy` will run its files: one file in one transaction (on
         // SQLite with foreign keys off until it is checked), on MySQL a file per statement, and the
         // lock-safe shape's files one after another. Each says the locks it holds.
@@ -4204,7 +4212,11 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             }
             (failed, hazards) = run_pieces(shadows.db(c2), pieces(&None, &plan)).await?;
             reached = catalog(shadows.db(c2)).await?;
-            notes.push(format!("  {} Written as one file: split so that none blocks writes while it reads every row, it didn't reach {target_name}", paint("yellow", "!")));
+            notes.push(if commits == 0 {
+                format!("  {} Written as one file: split so that none blocks writes while it reads every row, it didn't reach {target_name}", paint("yellow", "!"))
+            } else {
+                format!("  {} Split only after each new enum value: split so that none blocks writes while it reads every row, it didn't reach {target_name}", paint("yellow", "!"))
+            });
         }
         if !hazards.is_empty() && !choices.blocking && failed.is_none() && reached == wanted {
             return Ok(Err(vec![lock_problem(&hazards, &asked, choices)]));
@@ -4215,19 +4227,22 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         let split_files = split.as_ref().map(|files| files.len());
         let mut texts = match split {
             Some(mut files) => {
-                // The moves first, in a file of their own where the first is an index built concurrently.
+                // The moves first, in a file of their own where the first is an index built
+                // concurrently; past the files that commit an enum's new labels alone.
                 if !moves.is_empty() {
-                    let first = files[0].iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect::<Vec<_>>().join("\n");
+                    let at = commits.min(files.len().saturating_sub(1));
+                    let first = files[at].iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect::<Vec<_>>().join("\n");
                     if runs_alone(&first, d) {
-                        files.insert(0, std::mem::take(&mut moves));
+                        files.insert(at, std::mem::take(&mut moves));
                     } else {
-                        files[0].splice(0..0, std::mem::take(&mut moves));
+                        files[at].splice(0..0, std::mem::take(&mut moves));
                     }
                 }
                 crate::locks::file_texts(&plan, &files)
             }
             None => {
-                plan.statements.splice(0..0, std::mem::take(&mut moves));
+                let at = plan.statements.iter().rposition(|s| s == crate::diff::COMMIT).map_or(0, |c| c + 1);
+                plan.statements.splice(at..at, std::mem::take(&mut moves));
                 plan_files(&plan, d)
             }
         };
@@ -4256,7 +4271,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             notes.push(format!("      {}", paint("cyan", &create_command(&asked, choices, &names, &[]))));
         }
         if failed.is_none() && reached == wanted {
-            return Ok(Ok(Drafted { lock_safe: split_files.is_some(), changes: changed_lines(&before, &reached), ..drafted(texts, 0, notes, false) }));
+            return Ok(Ok(Drafted { lock_safe: split_files.is_some(), commits, changes: changed_lines(&before, &reached), ..drafted(texts, 0, notes, false) }));
         }
         let mut remaining = Vec::new();
         if let Some(f) = &failed {
@@ -4268,7 +4283,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         notes.push(paint("bold red", &format!("✗ The migration doesn't reach {target_name}: what remains is written at its top, to finish by hand")));
         notes.extend(remaining.iter().map(|r| format!("  {r}")));
         texts[0] = format!("-- This plan does not reach {target_name} yet. What remains:\n{}\n{}", remaining.iter().map(|r| format!("--   {}", r.replace('\n', " "))).collect::<Vec<_>>().join("\n"), texts[0]);
-        Ok(Ok(Drafted { lock_safe: split_files.is_some(), ..drafted(texts, 1, notes, false) }))
+        Ok(Ok(Drafted { lock_safe: split_files.is_some(), commits, ..drafted(texts, 1, notes, false) }))
     }
     .await;
     shadows.finish().await;
@@ -4844,8 +4859,20 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
             Ok(Settled { renames, plan, .. }) => (renames, plan),
             Err(problems) => return Ok(Err(Unreached::Refused(problems))),
         };
+        // Where the plan commits partway, the renames planning ran on the database run again after
+        // the commit, as a migration writes them: an enum's new labels commit alone, and a push that
+        // fails past them leaves every table under its name.
+        let mut statements: Vec<String> = plan.runnable().cloned().collect();
+        if let Some(last) = statements.iter().rposition(|s| s == crate::diff::COMMIT).filter(|_| transactional) {
+            let ran: Vec<String> = renames.iter().filter(|s| !s.starts_with("--")).cloned().collect();
+            if !ran.is_empty() {
+                db.exec("rollback").await?;
+                db.exec("begin").await?;
+                statements.splice(last + 1..last + 1, ran);
+            }
+        }
         let mut committed = false;
-        for s in plan.runnable().chain(then) {
+        for s in statements.iter().chain(then) {
             if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
                 return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
             }
