@@ -181,6 +181,7 @@ Each change below can surface in a project that upgrades from v0.7.
 - **The run-time schema check was removed.** Build again after each migration, since nothing warns when a build is older than its database ([#208](https://github.com/reylosql/reylo/pull/208), [#306](https://github.com/reylosql/reylo/pull/306)).
 - **A query made with `defineQuery` sends its `sql` as written.** Give a statement with `:name` placeholders its compiled `text` and `order` ([#306](https://github.com/reylosql/reylo/pull/306)).
 - **A value with no time zone carries no `format: date-time` or `format: time` in a query's JSON Schema.** Validate it without the format ([#306](https://github.com/reylosql/reylo/pull/306)).
+- **The agent skill is named `reylo`, where it was `using-reylo`.** Run `npx skills add reylosql/reylo --skill reylo`, then `npx skills remove using-reylo` ([`3258240`](https://github.com/reylosql/reylo/commit/325824087fcc45a160b59e43e5ddf760c8ca50bc)).
 
 ### Postgres
 
