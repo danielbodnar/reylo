@@ -594,18 +594,27 @@ async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Opti
 // its row. No run cut off between the two leaves an applied row with nothing to compare.
 
 pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), Error> {
+    run_undone(db, m, record).await.map_err(|(e, _)| e)
+}
+
+/// Runs a migration as [`run`] does; a failure says whether nothing of the migration is known to be
+/// in place: never on MySQL, which commits each DDL statement, nor where a statement run outside a
+/// transaction may have left part of itself, or finished before its row could be written.
+async fn run_undone(db: &mut Db, m: &Migration, record: bool) -> Result<(), (Error, bool)> {
+    let undone = db.dialect() != Dialect::Mysql;
     let mut tries = 1;
     loop {
         match run_once(db, m, record).await {
             Ok(()) => return Ok(()),
-            Err(Ran::Failed(e)) => return Err(e),
+            Err(Ran::Failed(e)) => return Err((e, undone)),
+            Err(Ran::Partly(e)) => return Err((e, false)),
             // A statement that gave up waiting for a lock changed nothing: the file runs again, after
             // a pause that grows, until the last try.
             Err(Ran::Waited(_)) if tries < LOCK_TRIES => {
                 tokio::time::sleep(std::time::Duration::from_secs(LOCK_PAUSES[(tries - 1).min(LOCK_PAUSES.len() - 1)])).await;
                 tries += 1;
             }
-            Err(Ran::Waited(e)) => return Err(Error(format!("{}: {e}, {LOCK_TRIES} times over {} seconds{}", m.name, LOCK_PAUSES.iter().take(LOCK_TRIES - 1).sum::<u64>(), holders(db).await))),
+            Err(Ran::Waited(e)) => return Err((Error(format!("{}: {e}, {LOCK_TRIES} times over {} seconds{}", m.name, LOCK_PAUSES.iter().take(LOCK_TRIES - 1).sum::<u64>(), holders(db).await)), undone)),
         }
     }
 }
@@ -687,25 +696,39 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
             limit_lock_wait(db).await?;
         }
         let result = db.script_or_wait(&m.sql).await;
-        if d == Dialect::Mysql {
-            reset_lock_wait(db).await?;
-        }
+        let reset = if d == Dialect::Mysql { reset_lock_wait(db).await } else { Ok(()) };
         if let Err(e) = result {
-            for index in invalid(db).await.unwrap_or_default() {
-                if !before.contains(&index) {
-                    let _ = db.exec(&format!("drop index concurrently if exists {index}")).await;
+            let mut dropped = true;
+            match invalid(db).await {
+                Ok(now) => {
+                    for index in now.iter().filter(|i| !before.contains(i)) {
+                        dropped &= db.exec(&format!("drop index concurrently if exists {index}")).await.is_ok();
+                    }
                 }
+                Err(_) => dropped = false,
             }
             if record {
                 let _ = db.exec_with(&format!("delete from {HISTORY_TABLE} where name = {}", db.param(1)), &[&m.name]).await;
             }
-            return Err(e);
+            // A statement that gave up waiting for a lock changed nothing, and SQLite's run whole or
+            // not at all; on Postgres, an index build leaves nothing once its invalid index is
+            // dropped, and any other may leave part of itself, as a detach left pending.
+            return Err(match e {
+                Ran::Failed(e) if d == Dialect::Sqlite || (dropped && crate::sql::builds_index_alone(&m.sql, d)) => Ran::Failed(e),
+                Ran::Failed(e) | Ran::Partly(e) => Ran::Partly(e),
+                waited => waited,
+            });
         }
+        // The statement is in place from here, so a failure is no longer one that left nothing.
+        reset.map_err(Ran::Partly)?;
         if record {
-            let lines = catalog(db).await?;
-            let value = fingerprint_of(db, &lines).await?;
-            db.exec_with(&format!("update {HISTORY_TABLE} set applied_at = {}, fingerprint = {} where name = {}", now_sql(d), db.param(1), db.param(2)), &[&value, &m.name]).await?;
-            store_catalog(db, &m.name, &lines).await?;
+            let recorded = async {
+                let lines = catalog(db).await?;
+                let value = fingerprint_of(db, &lines).await?;
+                db.exec_with(&format!("update {HISTORY_TABLE} set applied_at = {}, fingerprint = {} where name = {}", now_sql(d), db.param(1), db.param(2)), &[&value, &m.name]).await?;
+                store_catalog(db, &m.name, &lines).await
+            };
+            recorded.await.map_err(Ran::Partly)?;
         }
         return Ok(());
     }
@@ -738,10 +761,9 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
     if result.is_err() {
         let _ = db.exec("rollback").await;
     }
-    if d == Dialect::Sqlite {
-        db.exec("pragma foreign_keys = on").await?;
-    }
+    let on = if d == Dialect::Sqlite { db.exec("pragma foreign_keys = on").await } else { Ok(()) };
     result?;
+    on.map_err(Ran::Partly)?;
     // The migration has committed: a fingerprint that can't be read now leaves its row pending,
     // which the next deploy refuses, rather than reading as a migration that failed.
     if record {
@@ -2155,7 +2177,7 @@ async fn deploy_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
     let mut applied: Vec<serde_json::Value> = Vec::new();
     for m in &plan.pending {
         let at = std::time::Instant::now();
-        match run(db, m, true).await {
+        match run_undone(db, m, true).await {
             // Its row holds the fingerprint it left, so that a run cut off after it, or a migration
             // after it that fails and leaves part of itself, is seen by the next run.
             Ok(()) => {
@@ -2163,15 +2185,11 @@ async fn deploy_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
                 rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {ms} ms"))));
                 applied.push(serde_json::json!({ "name": m.name, "state": "applied", "ms": ms as u64 }));
             }
-            Err(e) => {
-                failed(&mut rows, m, &e, d, log);
+            Err((e, undone)) => {
+                rows.row(log, &paint("bold red", "✗"), &m.name, "failed");
                 applied.push(serde_json::json!({ "name": m.name, "state": "failed", "error": e.0 }));
-                if started.contains(&m.name.as_str()) {
-                    log("  A run before this one was cut off here, so its change may be in place");
-                    log(&steps(4, &[("See whether it is", &["reylo migrate deploy --dry-run"]), ("Record it if it is, running nothing", &["reylo migrate history push"])]));
-                } else if !may_leave_part(&m.sql, d) {
-                    log(&steps(2, &[("Fix it, lock the fix and deploy again", &["reylo migrate dev", "reylo migrate deploy"])]));
-                }
+                log("");
+                print_problems(&[deploy_failure(m, &e, d, started.contains(&m.name.as_str()), undone)], log);
                 code = 1;
                 break;
             }
@@ -2194,6 +2212,28 @@ fn failed(rows: &mut Rows, m: &Migration, e: &Error, d: Dialect, log: Log<'_>) {
         log("  MySQL commits each statement, so its first statements may be in place");
         log(&steps(4, &[("See which are", &["reylo migrate deploy --dry-run"])]));
     }
+}
+
+/// A migration deploy ran that failed: its error, what of it may be in place, and what to do next.
+/// Where nothing of it is in place ([`run_undone`]), nor of its row, it is said to have rolled back,
+/// and to be fixed and run again; elsewhere, where its change or its row may be in place, the dry run
+/// says which.
+fn deploy_failure(m: &Migration, e: &Error, d: Dialect, started: bool, undone: bool) -> Problem {
+    let problem = Problem::new("migration-failed", format!("The migration {} failed", m.name)).note(&e.0);
+    if started {
+        return problem
+            .note("A run before this one was cut off here, so its change may be in place.")
+            .fix("See whether it is", &["reylo migrate deploy --dry-run"])
+            .fix("Record it if it is, running nothing", &["reylo migrate history push"]);
+    }
+    if !undone {
+        let why = if d == Dialect::Mysql { "MySQL commits each statement, so its first statements may be in place" } else { "It runs outside a transaction, so its change may be in place" };
+        return problem.note(format!("{why}.")).fix("See what is", &["reylo migrate deploy --dry-run"]);
+    }
+    Problem { title: format!("The migration {} failed and was rolled back", m.name), ..problem }
+        .note("Nothing was recorded, so the next deploy runs it again.")
+        .fix("Fix the file, lock the fix and deploy again", &["reylo migrate dev", "reylo migrate deploy"])
+        .fix("If another database already ran it, write a new migration instead", &["reylo migrate new <name>"])
 }
 
 /// What a command says where the fingerprint its last run stored can't be compared.
@@ -5984,8 +6024,18 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
     let mut db = Db::open(opts).await?;
     let mut code = 0;
     for (label, sql) in items {
-        match db.script(sql).await {
-            Ok(()) => log(&format!("{} {label}", paint("green", "✓"))),
+        match db.script_tables(sql, RUN_ROWS_SHOWN).await {
+            Ok(tables) => {
+                log(&format!("{} {label}", paint("green", "✓")));
+                for (k, table) in tables.iter().enumerate() {
+                    if k > 0 {
+                        log("");
+                    }
+                    for line in table_lines(table) {
+                        log(&line);
+                    }
+                }
+            }
             Err(e) => {
                 log(&paint("bold red", &format!("✗ {label}")));
                 log(&format!("  {e}"));
@@ -6009,9 +6059,69 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
     Ok(code)
 }
 
+/// How many rows `reylo run` shows of what a statement returns.
+#[cfg(feature = "cli")]
+const RUN_ROWS_SHOWN: usize = 50;
+
+/// What a statement returned, as `reylo run` shows it: a table of the rows it kept under its
+/// columns' names, each value on one line, a number set right and null dim, then how many rows it
+/// returned, and how many of those aren't shown.
+#[cfg(feature = "cli")]
+fn table_lines(table: &crate::db::Table) -> Vec<String> {
+    const WIDEST: usize = 60;
+    let cell = |value: &Option<String>| -> Option<String> {
+        let text = value.as_ref()?.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
+        Some(if text.chars().count() > WIDEST { format!("{}…", text.chars().take(WIDEST - 1).collect::<String>()) } else { text })
+    };
+    let rows: Vec<Vec<Option<String>>> = table.rows.iter().map(|row| row.iter().map(cell).collect()).collect();
+    let width = |i: usize| rows.iter().map(|r| r[i].as_ref().map_or(4, |v| v.chars().count())).chain([table.columns[i].chars().count()]).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..table.columns.len()).map(width).collect();
+    let numeric: Vec<bool> = (0..table.columns.len()).map(|i| rows.iter().any(|r| r[i].is_some()) && rows.iter().all(|r| r[i].as_ref().is_none_or(|v| v.parse::<f64>().is_ok()))).collect();
+    let pad = |text: &str, painted: String, i: usize| {
+        let gap = " ".repeat(widths[i] - text.chars().count());
+        if numeric[i] { format!("{gap}{painted}") } else { format!("{painted}{gap}") }
+    };
+    let line = |cells: Vec<String>| format!("  {}", cells.join("  ")).trim_end().to_string();
+    let mut out = vec![line(table.columns.iter().enumerate().map(|(i, c)| pad(c, paint("bold", c), i)).collect())];
+    out.push(line(widths.iter().map(|w| paint("dim", &"─".repeat(*w))).collect()));
+    for row in &rows {
+        out.push(line(row.iter().enumerate().map(|(i, v)| match v {
+            Some(v) => pad(v, v.clone(), i),
+            None => pad("null", paint("dim", "null"), i),
+        }).collect()));
+    }
+    let total = table.total;
+    let counted = format!("  Returned {total} row{}", if total == 1 { "" } else { "s" });
+    out.push(paint("dim", &if total > rows.len() { format!("{counted}, {} not shown", total - rows.len()) } else { counted }));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_statements_rows_show_as_a_table() {
+        set_color(false);
+        let t = |columns: &[&str], rows: &[&[Option<&str>]], total: usize| crate::db::Table { columns: columns.iter().map(|c| c.to_string()).collect(), rows: rows.iter().map(|r| r.iter().map(|v| v.map(String::from)).collect()).collect(), total };
+        let authors = t(&["name", "score", "bio"], &[&[Some("Ada"), Some("3"), None], &[Some("Grace"), Some("12"), Some("line one\nline two")]], 2);
+        assert_eq!(table_lines(&authors).join("\n"), "  name   score  bio\n  ─────  ─────  ──────────────────\n  Ada        3  null\n  Grace     12  line one\\nline two\n  Returned 2 rows");
+        // Of a statement's rows, those kept are shown, and the count says how many weren't.
+        assert_eq!(table_lines(&t(&["name", "score", "bio"], &[&[Some("Ada"), Some("3"), None]], 51)).join("\n"), "  name  score  bio\n  ────  ─────  ────\n  Ada       3  null\n  Returned 51 rows, 50 not shown");
+        assert_eq!(table_lines(&t(&["n"], &[], 0)).join("\n"), "  n\n  ─\n  Returned 0 rows");
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_libsql_script_splits_where_sqlite_ends_each_statement() {
+        // A column named end in a trigger's body, a `;` in a string and in a comment, and a last statement with no `;`.
+        let script = "create trigger t after insert on a begin insert into audit values (new.end); end;\n-- a note; and more\ninsert into a values ('x;y');\n\nselect 1";
+        assert_eq!(crate::db::sqlite_statements(script), ["create trigger t after insert on a begin insert into audit values (new.end); end;", "\n-- a note; and more\ninsert into a values ('x;y');", "\n\nselect 1"]);
+        assert!(crate::db::sqlite_statements("-- nothing;\n").is_empty());
+        // An empty statement is none, a comment before its `;` or not.
+        assert_eq!(crate::db::sqlite_statements("select 1;; -- note\n; select 2;"), ["select 1;", " select 2;"]);
+    }
 
     #[test]
     #[cfg(feature = "cli")]

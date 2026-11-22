@@ -1377,6 +1377,8 @@ async fn a_failed_migration_leaves_nothing(mut p: P) {
     p.file("20261027110000_b.sql", &format!("create table b (id {int}); alter table a {change};"));
     p.schema(&format!("create table a (id {int}{column}); create table b (id {int});"));
     assert_eq!(p.migrate().await, 1, "{}", p.peek());
+    // Said as every refusal is: what failed, that nothing of it stays, and what to run next.
+    assert_has!(p.output(), r"  ✗ 20261027110000_b\.sql  failed\n\n✗ The migration 20261027110000_b\.sql failed and was rolled back\n  [^\n]+\n  Nothing was recorded, so the next deploy runs it again\.\n\n  Fix the file, lock the fix and deploy again:\n    reylo migrate dev\n    reylo migrate deploy\n  If another database already ran it, write a new migration instead:\n    reylo migrate new <name>$");
     assert!(p.try_rows("select 1 from b").await.is_err(), "b rolled back with the file");
     assert_eq!(p.history().await, ["20261027100000_a.sql"]);
 }
@@ -1466,7 +1468,7 @@ async fn a_lone_statement_cut_off_with_no_fingerprint_to_compare(mut p: P) {
     p.output();
     // Run again, it fails where it landed, and says how to find out.
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"✗ 20261027110000_index\.sql  failed[^\n]*\n[\s\S]*A run before this one was cut off here, so its change may be in place\n    See whether it is:\n      reylo migrate deploy --dry-run\n    Record it if it is, running nothing:\n      reylo migrate history push");
+    assert_has!(p.output(), r"✗ 20261027110000_index\.sql  failed\n[\s\S]*A run before this one was cut off here, so its change may be in place\.\n\n  See whether it is:\n    reylo migrate deploy --dry-run\n  Record it if it is, running nothing:\n    reylo migrate history push");
     assert_eq!(p.dry_run().await, 1);
     assert_has!(p.output(), r"20261027110000_index\.sql makes exactly this change[^\n]*\n    reylo migrate history push");
     assert_eq!(p.history_push().await, 0, "{}", p.peek());
@@ -2949,6 +2951,7 @@ on!(
     a_migration_that_creates_a_role_is_refused,
     an_object_the_comparison_does_not_read_is_not_a_match,
     a_failed_concurrent_index_leaves_nothing,
+    a_failed_lone_statement_may_leave_its_change,
     a_platforms_objects_are_left_out,
     reylo_run_runs_inline_sql_and_files,
     history_push_leaves_a_data_migration_pending,
@@ -3753,10 +3756,24 @@ mod adversarial {
         p.schema("create table t (x int); create unique index t_x on t (x);");
         p.output();
         assert_eq!(p.migrate().await, 1);
-        assert_has!(p.output(), "could not create unique index");
+        assert_has!(p.output(), r"✗ The migration 20261027110000_unique\.sql failed and was rolled back\n  could not create unique index[^\n]*\n  Nothing was recorded, so the next deploy runs it again\.\n\n  Fix the file, lock the fix and deploy again:");
         assert!(p.rows("select 1 from pg_class where relname = 't_x'").await.is_empty(), "the invalid index was dropped");
         p.exec("delete from t where ctid = (select max(ctid) from t)").await;
         assert_eq!(p.migrate().await, 0, "the file runs again as written:\n{}", p.peek());
+    }
+
+    pub async fn a_failed_lone_statement_may_leave_its_change(mut p: P) {
+        p.schema("create table t (x int);");
+        p.file("20261027100000_t.sql", "create table t (x int);");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        // Run outside a transaction, a statement other than an index build may leave part of itself,
+        // as a detach left pending: deploy never says it rolled back.
+        p.file("20261027110000_drop.sql", "drop index concurrently t_missing;");
+        p.output();
+        assert_eq!(p.migrate().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"✗ The migration 20261027110000_drop\.sql failed\n  [^\n]*t_missing[^\n]*\n  It runs outside a transaction, so its change may be in place\.\n\n  See what is:\n    reylo migrate deploy --dry-run$");
+        assert!(!out.contains("rolled back"), "{out}");
     }
 
     pub async fn a_platforms_objects_are_left_out(mut p: P) {
@@ -3837,6 +3854,11 @@ mod adversarial {
         assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(o, &items, log).await).await, 0, "{}", p.peek());
         assert_eq!(p.rows("select x from t order by x").await.iter().map(|r| r.text("x").to_string()).collect::<Vec<_>>(), ["1", "2"]);
         assert_eq!(p.rows("select to_regclass('__reylo_migrations') as t").await[0].get("t"), None, "records nothing");
+        // What each statement returns is shown under its line, its columns where it returned no row.
+        p.output();
+        let items = [("rows".to_string(), "select x from t order by x; select x from t where false; update t set x = x returning x".to_string())];
+        assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(o, &items, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.output(), "✓ rows\n  x\n  ─\n  1\n  2\n  Returned 2 rows\n\n  x\n  ─\n  Returned 0 rows\n\n  x\n  ─\n  1\n  2\n  Returned 2 rows");
     }
 
     pub async fn history_push_leaves_a_data_migration_pending(mut p: P) {
