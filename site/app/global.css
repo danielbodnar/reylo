@@ -568,10 +568,15 @@
 }
 
 /* The one glow of the yellow marks by night: the wordmark, "Leave a star!" and the homepage's heading
-   blades. A bright near light, a gold one, then a wide amber falloff, so all of them read as one light. */
+   blades. A bright near light, a gold one, then a wide amber falloff, so all of them read as one light;
+   the star note's and the blades' are brighter, since their strokes are thinner than the wordmark's. */
 :root {
   --saber-glow: drop-shadow(0 0 2px rgb(255 214 60 / 0.8)) drop-shadow(0 0 6px rgb(255 200 31 / 0.6)) drop-shadow(0 0 14px rgb(255 184 0 / 0.35));
   --saber-text-glow: 0 0 2px rgb(255 214 60 / 0.6), 0 0 8px rgb(255 200 31 / 0.55), 0 0 18px rgb(255 184 0 / 0.3);
+  /* Brighter for the thinner marks: the handwritten note, with a paler core, and the 3px blade. */
+  --saber-glow-strong: drop-shadow(0 0 1.5px rgb(255 244 196 / 0.9)) drop-shadow(0 0 6px rgb(255 200 31 / 0.8)) drop-shadow(0 0 18px rgb(255 184 0 / 0.5));
+  --saber-text-glow-strong: 0 0 1.5px rgb(255 244 196 / 0.8), 0 0 8px rgb(255 200 31 / 0.75), 0 0 22px rgb(255 184 0 / 0.45);
+  --saber-glow-strongest: drop-shadow(0 0 2px rgb(255 224 96 / 1)) drop-shadow(0 0 9px rgb(255 200 31 / 0.85)) drop-shadow(0 0 26px rgb(255 184 0 / 0.55));
 }
 
 /* ── Saber light ───────────────────────────────────────────────────────────────
@@ -595,21 +600,32 @@
 }
 
 .dark .dk-star svg {
-  filter: var(--saber-glow);
+  filter: var(--saber-glow-strong);
+}
+
+.dark .dk-star {
+  color: #ffd43b;
 }
 
 .dark .dk-star span {
-  text-shadow: var(--saber-text-glow);
+  text-shadow: var(--saber-text-glow-strong);
 }
 
 /* The wordmark in the chrome (components/brand.tsx) is the yellow, as the hero's mark is, and by
-   night it gives off the saber glow, as the star note does. */
+   night it gives off the saber glow. */
 .reylo-brand {
   color: var(--dk-accent);
 }
 
 .dark .reylo-brand svg {
   filter: var(--saber-glow);
+}
+
+/* The sidebar scrolls, so it clips: 28px of room left of the wordmark, where docs-kit leaves 12px,
+   keeps the glow's wide amber falloff from ending in a straight edge. */
+.dk-pages-scroll {
+  margin-inline-start: -1.75rem;
+  padding-inline-start: 1.75rem;
 }
 
 /* ── The comparison, /compare (components/compare-table.tsx) ──

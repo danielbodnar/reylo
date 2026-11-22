@@ -287,9 +287,9 @@ function Examples() {
   return (
     <section className="rh-examples">
       <header className="rh-section-head">
-        <h2>What Reylo infers</h2>
+        <h2>The full power of SQL in the palm of your hand</h2>
         <Blade />
-        <p>Parameters, columns, nullability, cardinality and nested JSON shapes, from your database's own analysis of each query.</p>
+        <p>No lossy DSL and no CRUD-limited ORM. Reylo gives you (and your agents) back the freedom to write complex queries without sacrificing DRY.</p>
       </header>
       <div className="rh-ex">
         <Card variant={example.variants[shown]!} dialects={Object.keys(example.variants) as Dialect[]} dialect={shown} onDialect={setDialect} tabs={tabs} />
