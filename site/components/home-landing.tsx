@@ -43,7 +43,6 @@ const SHOWN = [
   'bulk-inserts',
   'nested-fetching',
   'typed-json:2',
-  'dynamic-filtering',
 ];
 /** A tab's own name and caption where the card is a later one in its section, whose heading and lede lean on the card before it. */
 const OWN: Record<string, { title?: string; lede?: string }> = {
