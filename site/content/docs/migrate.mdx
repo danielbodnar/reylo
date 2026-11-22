@@ -214,6 +214,8 @@ create table line_items (
 #### Exclusion constraints
 
 ```sql
+create extension btree_gist;
+
 create table bookings (
   room integer not null,
   during tstzrange not null,
