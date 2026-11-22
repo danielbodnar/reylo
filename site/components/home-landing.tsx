@@ -255,6 +255,7 @@ function Examples() {
     <section className="rh-examples">
       <header className="rh-section-head">
         <h2>What Reylo infers</h2>
+        <Blade />
         <p>Parameters, columns, nullability, cardinality and nested JSON shapes, from your database's own analysis of each query.</p>
       </header>
       <div className="rh-ex">
@@ -389,6 +390,11 @@ const FEATURES: { title: string; body: ReactNode; icon: ReactNode }[] = [
   },
 ];
 
+/** The rule under a section's heading: a short blade, about a lightsaber's proportions, in the yellow, lit by night. */
+function Blade() {
+  return <span className="rh-blade" aria-hidden="true" />;
+}
+
 /** The databases and hosts in two rows, as even as their count allows, each centred. */
 const LOGOS = [...DATABASES, ...HOSTS];
 const LOGO_ROWS = [LOGOS.slice(0, Math.ceil(LOGOS.length / 2)), LOGOS.slice(Math.ceil(LOGOS.length / 2))];
@@ -398,6 +404,7 @@ function Features() {
     <section className="rh-features">
       <header className="rh-section-head">
         <h2>Why Reylo</h2>
+        <Blade />
       </header>
       <div className="rh-grid">
         {FEATURES.map((f) => (
@@ -443,6 +450,7 @@ function End() {
   return (
     <section className="ml-end rh-end">
       <h2>Ship faster with Reylo</h2>
+        <Blade />
       <Install centered />
     </section>
   );

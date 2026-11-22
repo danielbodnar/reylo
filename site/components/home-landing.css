@@ -360,6 +360,39 @@
   text-wrap: balance;
 }
 
+/* The blade under each heading, 72 by 3px, about a lightsaber's proportions: the yellow by day, and by
+   night a white core in yellow light, as the comparison page's frame is lit. Its margins put it
+   halfway, by eye, between the heading's baseline and the sentence's lowercase under it. */
+.rh-blade {
+  display: block;
+  width: 4.5rem;
+  height: 3px;
+  margin: 1rem auto 0;
+  border-radius: 999px;
+  background: var(--dk-accent);
+}
+
+.dark .rh-blade {
+  background: #fffbea;
+  box-shadow:
+    0 0 1px 0.5px #fff4c4,
+    0 0 3px 1px #ffe55c,
+    0 0 7px 1px #ffc81f,
+    0 0 13px 0 rgb(255 184 0 / 0.28);
+}
+
+.rh-section-head .rh-blade + p {
+  margin-top: 0.78125rem;
+}
+
+.rh-end h2 {
+  margin-bottom: 0;
+}
+
+.rh-end .rh-blade {
+  margin-bottom: 2.5rem;
+}
+
 /* One card, centred, as wide as the docs' column: the examples' names as tabs across its top, in
    rows the browser balances so no name sits alone on one, the picked one raised on a lighter pill;
    the example's lede as a caption under the card. */
