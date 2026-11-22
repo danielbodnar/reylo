@@ -67,7 +67,7 @@ $ reylo migrate new add_bio
   + column users.bio text
 ```
 
-It's plain SQL, yours to edit:
+It's a plain SQL file. You can edit it as you see fit (e.g. adding data migration logic).
 
 ```sql title="20261104140347_add_bio.sql"
 alter table users add column bio text;
