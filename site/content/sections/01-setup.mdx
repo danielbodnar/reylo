@@ -325,8 +325,8 @@ DATABASE_URL=mysql://root@localhost:3306/app
 ```
 
 ```sh title=".env" tab="SQLite" tab-group="dialect"
-# or sqlite:; the path starts at package.json
-DATABASE_URL=file:./app.db
+# the path starts at package.json
+DATABASE_URL=sqlite:./app.db
 ```
 
 Reylo reads `.env.local` and `.env`. To override this, list the files in `.reylo.yaml`:
