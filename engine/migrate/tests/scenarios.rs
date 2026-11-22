@@ -493,6 +493,7 @@ for_each_dialect!(
     create_lists_every_rename_it_assumes,
     commands_create_prints_for_names_with_spaces_run_as_printed,
     deploy_compares_with_what_dev_replayed,
+    dev_says_schema_sql_is_ahead_once_a_changed_object_is_pushed,
     deploy_refuses_any_schema_with_no_history,
     init_on_an_empty_database_writes_an_empty_schema_and_lock,
     a_broken_draft_keeps_what_sync_made,
@@ -1376,6 +1377,8 @@ async fn a_failed_migration_leaves_nothing(mut p: P) {
     p.file("20261027110000_b.sql", &format!("create table b (id {int}); alter table a {change};"));
     p.schema(&format!("create table a (id {int}{column}); create table b (id {int});"));
     assert_eq!(p.migrate().await, 1, "{}", p.peek());
+    // Said as every refusal is: what failed, that nothing of it stays, and what to run next.
+    assert_has!(p.output(), r"  ✗ 20261027110000_b\.sql  failed\n\n✗ The migration 20261027110000_b\.sql failed and was rolled back\n  [^\n]+\n  Nothing was recorded, so the next deploy runs it again\.\n\n  Fix the file, lock the fix and deploy again:\n    reylo migrate dev\n    reylo migrate deploy\n  If another database already ran it, write a new migration instead:\n    reylo migrate new <name>$");
     assert!(p.try_rows("select 1 from b").await.is_err(), "b rolled back with the file");
     assert_eq!(p.history().await, ["20261027100000_a.sql"]);
 }
@@ -1465,7 +1468,7 @@ async fn a_lone_statement_cut_off_with_no_fingerprint_to_compare(mut p: P) {
     p.output();
     // Run again, it fails where it landed, and says how to find out.
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"✗ 20261027110000_index\.sql  failed[^\n]*\n[\s\S]*A run before this one was cut off here, so its change may be in place\n    See whether it is:\n      reylo migrate deploy --dry-run\n    Record it if it is, running nothing:\n      reylo migrate history push");
+    assert_has!(p.output(), r"✗ 20261027110000_index\.sql  failed\n[\s\S]*A run before this one was cut off here, so its change may be in place\.\n\n  See whether it is:\n    reylo migrate deploy --dry-run\n  Record it if it is, running nothing:\n    reylo migrate history push");
     assert_eq!(p.dry_run().await, 1);
     assert_has!(p.output(), r"20261027110000_index\.sql makes exactly this change[^\n]*\n    reylo migrate history push");
     assert_eq!(p.history_push().await, 0, "{}", p.peek());
@@ -2112,6 +2115,35 @@ async fn deploy_compares_with_what_dev_replayed(mut p: P) {
     p.output();
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"^✓ Up to date$");
+}
+
+/// What dev says of schema.sql where an object changed rather than came, a view's text: edited, the
+/// two disagree, and the next migration writes the change; pushed, the database has schema.sql, so
+/// schema.sql is ahead.
+async fn dev_says_schema_sql_is_ahead_once_a_changed_object_is_pushed(mut p: P) {
+    let int = p.t.int;
+    let declared = |columns: &str| format!("create table t (id {int}, n {int}); create view v as select {columns} from t;");
+    p.linear();
+    p.schema(&declared("id"));
+    // A file each, since MySQL runs each statement alone.
+    p.file("20261027100000_t.sql", &format!("create table t (id {int}, n {int});"));
+    p.file("20261027100100_v.sql", "create view v as select id from t;");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.output();
+    p.schema(&declared("id, n"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"! The migrations and \S*schema\.sql disagree\n  To write what \S*schema\.sql has to a migration file:\n    reylo migrate new <name>");
+    assert_eq!(p.db_push().await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"✓ Up to date with the migrations\n» The schema is ahead of the migrations\n  To write the changes to a migration file:\n    reylo migrate new <name>");
+    // Written, the migration is recorded, and the two agree.
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "v", &Default::default(), log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"recorded: already in place");
+    assert!(!has(&out, "ahead|disagree"), "{out}");
 }
 
 async fn a_broken_draft_keeps_what_sync_made(mut p: P) {
@@ -2919,6 +2951,7 @@ on!(
     a_migration_that_creates_a_role_is_refused,
     an_object_the_comparison_does_not_read_is_not_a_match,
     a_failed_concurrent_index_leaves_nothing,
+    a_failed_lone_statement_may_leave_its_change,
     a_platforms_objects_are_left_out,
     reylo_run_runs_inline_sql_and_files,
     history_push_leaves_a_data_migration_pending,
@@ -2950,6 +2983,8 @@ on!(
     a_platforms_schemas_by_name_are_left_out_whoever_owns_them,
     a_projects_auth_and_storage_are_its_own_on_a_server_of_no_platform,
     a_change_by_hand_is_shown_alone_beside_a_function_of_many_lines,
+    an_enum_value_added_is_ahead_on_the_side_that_added_it,
+    a_comment_a_migration_adds_is_the_migrations,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
@@ -2993,6 +3028,9 @@ on!(
     a_renamed_tables_sequence_keeps_counting,
     a_table_renamed_as_it_gains_a_column_keeps_its_rows_and_index,
     an_enum_label_a_partition_uses_is_committed_first,
+    an_enum_label_a_default_uses_is_committed_first,
+    a_push_that_fails_past_an_enum_commit_keeps_what_it_drops,
+    a_push_that_fails_past_an_enum_commit_undoes_its_renames,
     a_foreign_table_is_renamed_as_stated,
     a_partitioned_table_is_renamed_with_its_partitions,
     a_table_renamed_onto_a_views_name_drops_the_view_first,
@@ -3721,10 +3759,24 @@ mod adversarial {
         p.schema("create table t (x int); create unique index t_x on t (x);");
         p.output();
         assert_eq!(p.migrate().await, 1);
-        assert_has!(p.output(), "could not create unique index");
+        assert_has!(p.output(), r"✗ The migration 20261027110000_unique\.sql failed and was rolled back\n  could not create unique index[^\n]*\n  Nothing was recorded, so the next deploy runs it again\.\n\n  Fix the file, lock the fix and deploy again:");
         assert!(p.rows("select 1 from pg_class where relname = 't_x'").await.is_empty(), "the invalid index was dropped");
         p.exec("delete from t where ctid = (select max(ctid) from t)").await;
         assert_eq!(p.migrate().await, 0, "the file runs again as written:\n{}", p.peek());
+    }
+
+    pub async fn a_failed_lone_statement_may_leave_its_change(mut p: P) {
+        p.schema("create table t (x int);");
+        p.file("20261027100000_t.sql", "create table t (x int);");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        // Run outside a transaction, a statement other than an index build may leave part of itself,
+        // as a detach left pending: deploy never says it rolled back.
+        p.file("20261027110000_drop.sql", "drop index concurrently t_missing;");
+        p.output();
+        assert_eq!(p.migrate().await, 1);
+        let out = p.output();
+        assert_has!(&out, r"✗ The migration 20261027110000_drop\.sql failed\n  [^\n]*t_missing[^\n]*\n  It runs outside a transaction, so its change may be in place\.\n\n  See what is:\n    reylo migrate deploy --dry-run$");
+        assert!(!out.contains("rolled back"), "{out}");
     }
 
     pub async fn a_platforms_objects_are_left_out(mut p: P) {
@@ -3805,6 +3857,11 @@ mod adversarial {
         assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(o, &items, log).await).await, 0, "{}", p.peek());
         assert_eq!(p.rows("select x from t order by x").await.iter().map(|r| r.text("x").to_string()).collect::<Vec<_>>(), ["1", "2"]);
         assert_eq!(p.rows("select to_regclass('__reylo_migrations') as t").await[0].get("t"), None, "records nothing");
+        // What each statement returns is shown under its line, its columns where it returned no row.
+        p.output();
+        let items = [("rows".to_string(), "select x from t order by x; select x from t where false; update t set x = x returning x".to_string())];
+        assert_eq!(p.run(async |o, log| reylo_migrate::run_sql(o, &items, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.output(), "✓ rows\n  x\n  ─\n  1\n  2\n  Returned 2 rows\n\n  x\n  ─\n  Returned 0 rows\n\n  x\n  ─\n  1\n  2\n  Returned 2 rows");
     }
 
     pub async fn history_push_leaves_a_data_migration_pending(mut p: P) {
@@ -3901,6 +3958,52 @@ mod adversarial {
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         assert_has!(p.output(), "Up to date");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    }
+
+    /// An enum is one line of the catalog, so a value added changes that line on both sides: schema.sql's
+    /// enum with a value more is schema.sql ahead, pushed or not, and a migration's is the migrations'.
+    pub async fn an_enum_value_added_is_ahead_on_the_side_that_added_it(mut p: P) {
+        let declared = |values: &str| format!("create type visibility as enum ({values}); create table bookmarks (id int primary key, visibility visibility not null default 'private');");
+        p.linear();
+        p.schema(&declared("'private', 'public'"));
+        p.file("20261027100000_bookmarks.sql", &declared("'private', 'public'"));
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        p.schema(&declared("'private', 'team', 'public'"));
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"» The schema is ahead of the migrations\n  To write the changes to a migration file:\n    reylo migrate new <name>");
+        assert_eq!(p.dry_run().await, 1, "{}", p.peek());
+        assert_has!(p.output(), r"The schema is ahead of the migrations\n\n[^\n]*add value 'team' after 'private'");
+        assert_eq!(p.db_push().await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"✓ Up to date with the migrations\n» The schema is ahead of the migrations\n  To write the changes to a migration file:\n    reylo migrate new <name>");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "team", &Default::default(), log).await).await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let out = p.output();
+        assert!(!has(&out, "ahead|disagree"), "{out}");
+        // A value a migration adds and schema.sql doesn't declare is the migrations'.
+        p.file("20261027100100_archived.sql", "alter type visibility add value 'archived';");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"The migrations make what \S*schema\.sql doesn't declare");
+        assert_eq!(p.dry_run().await, 1, "{}", p.peek());
+        assert_has!(p.output(), r"The migrations make what \S*schema\.sql doesn't declare");
+    }
+
+    /// A comment a migration makes and schema.sql doesn't declare is the migrations', though this
+    /// database, whose comments aren't compared, matches schema.sql as well as the migrations.
+    pub async fn a_comment_a_migration_adds_is_the_migrations(mut p: P) {
+        p.linear();
+        p.schema("create table t (id int);");
+        p.file("20261027100000_t.sql", "create table t (id int);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        p.file("20261027100100_doc.sql", "comment on table t is 'the table';");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let out = p.output();
+        assert_has!(&out, r"The migrations make what \S*schema\.sql doesn't declare");
+        assert!(!has(&out, "ahead"), "{out}");
     }
 
     pub async fn a_comment_in_schema_sql_is_written(mut p: P) {
@@ -4288,6 +4391,64 @@ mod adversarial {
         p.exec("insert into t values (2, 'ap')").await;
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    pub async fn an_enum_label_a_default_uses_is_committed_first(mut p: P) {
+        let v1 = "create type visibility as enum ('private', 'public'); create table bookmarks (id int primary key, visibility visibility not null default 'private'); create view public_bookmarks as select id from bookmarks where visibility = 'public';";
+        let v2 = "create type visibility as enum ('private', 'public', 'org'); create table bookmarks (id int primary key, visibility visibility not null default 'org'); create view public_bookmarks as select id from bookmarks where visibility = 'public';";
+        p.schema(v1);
+        p.file("20261027100000_bookmarks.sql", v1);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into bookmarks values (1, 'public')").await;
+        // Postgres refuses a label added and used in one transaction: the label is a migration of
+        // its own, before the default, which copies no table and needs no `--blocking`.
+        p.schema(v2);
+        p.output();
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "org_default", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_has!(p.output(), r"✓ Wrote 2 migrations, since Postgres can't use a new enum value in the migration that adds it:");
+        let made: Vec<String> = p.files().into_iter().filter(|f| f.contains("_org_default")).collect();
+        assert_eq!(made.len(), 2, "{made:?}");
+        let first = std::fs::read_to_string(p.dir.join("migrations").join(&made[0])).unwrap();
+        let second = std::fs::read_to_string(p.dir.join("migrations").join(&made[1])).unwrap();
+        assert_eq!(first.trim(), "alter type visibility add value 'org' after 'public';");
+        assert_eq!(second.trim(), "alter table bookmarks alter column visibility set default 'org';");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into bookmarks (id) values (2)").await;
+        assert_eq!(p.rows("select 1 from bookmarks where visibility = 'org'").await.len(), 1);
+    }
+
+    pub async fn a_push_that_fails_past_an_enum_commit_keeps_what_it_drops(mut p: P) {
+        let v1 = "create type mood as enum ('a'); create table items (i int, m mood default 'a'); create table old_notes (body text); create table x (c mood); create view v as select c from x;";
+        p.file("20261027100000_items.sql", v1);
+        p.schema(v1);
+        assert_eq!(p.dev_then_push().await, 0, "{}", p.peek());
+        p.exec("insert into items values (-1, 'a')").await;
+        p.exec("insert into old_notes values ('kept')").await;
+        p.output();
+        // The new label commits first, alone: the check its row fails after it undoes the drop, and
+        // the column's move off the type with the view over it.
+        p.schema("create type mood as enum ('a', 'b'); create table items (i int check (i > 0), m mood default 'b'); create table x (c text); create view v as select c from x;");
+        assert_eq!(p.db_push_with(&push(&["old_notes"], &[], false)).await, 1, "{}", p.peek());
+        assert_eq!(p.rows("select body from old_notes").await.len(), 1);
+        assert_eq!(p.rows("select 1 from pg_views where viewname = 'v'").await.len(), 1);
+        assert_eq!(p.rows("select 1 from information_schema.columns where table_name = 'x' and udt_name = 'mood'").await.len(), 1);
+        assert_eq!(p.rows("select 1 from pg_enum where enumlabel = 'b'").await.len(), 1);
+    }
+
+    pub async fn a_push_that_fails_past_an_enum_commit_undoes_its_renames(mut p: P) {
+        p.file("20261027100000_data.sql", "create type mood as enum ('a'); create table items (i int, m mood default 'a'); create table t_data (id int, name text); create view data as select * from t_data; create view q as select * from data;");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into t_data values (1, 'a')").await;
+        p.exec("insert into items values (-1, 'a')").await;
+        p.output();
+        // The new label commits first, alone: the rename, and the views it drops, run after it, and
+        // the check its row fails undoes them.
+        p.schema("create type mood as enum ('a', 'b'); create table items (i int check (i > 0), m mood default 'b'); create table data (id int, name text); create view q as select * from data;");
+        assert_eq!(p.db_push_with(&push(&[], &[("t_data", "data")], false)).await, 1, "{}", p.peek());
+        assert_eq!(p.rows("select name from t_data").await.len(), 1);
+        assert_eq!(p.rows("select 1 from pg_views where viewname in ('data', 'q')").await.len(), 2);
+        assert_eq!(p.rows("select 1 from pg_enum where enumlabel = 'b'").await.len(), 1);
     }
 
     pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {

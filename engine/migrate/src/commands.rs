@@ -594,18 +594,27 @@ async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Opti
 // its row. No run cut off between the two leaves an applied row with nothing to compare.
 
 pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), Error> {
+    run_undone(db, m, record).await.map_err(|(e, _)| e)
+}
+
+/// Runs a migration as [`run`] does; a failure says whether nothing of the migration is known to be
+/// in place: never on MySQL, which commits each DDL statement, nor where a statement run outside a
+/// transaction may have left part of itself, or finished before its row could be written.
+async fn run_undone(db: &mut Db, m: &Migration, record: bool) -> Result<(), (Error, bool)> {
+    let undone = db.dialect() != Dialect::Mysql;
     let mut tries = 1;
     loop {
         match run_once(db, m, record).await {
             Ok(()) => return Ok(()),
-            Err(Ran::Failed(e)) => return Err(e),
+            Err(Ran::Failed(e)) => return Err((e, undone)),
+            Err(Ran::Partly(e)) => return Err((e, false)),
             // A statement that gave up waiting for a lock changed nothing: the file runs again, after
             // a pause that grows, until the last try.
             Err(Ran::Waited(_)) if tries < LOCK_TRIES => {
                 tokio::time::sleep(std::time::Duration::from_secs(LOCK_PAUSES[(tries - 1).min(LOCK_PAUSES.len() - 1)])).await;
                 tries += 1;
             }
-            Err(Ran::Waited(e)) => return Err(Error(format!("{}: {e}, {LOCK_TRIES} times over {} seconds{}", m.name, LOCK_PAUSES.iter().take(LOCK_TRIES - 1).sum::<u64>(), holders(db).await))),
+            Err(Ran::Waited(e)) => return Err((Error(format!("{}: {e}, {LOCK_TRIES} times over {} seconds{}", m.name, LOCK_PAUSES.iter().take(LOCK_TRIES - 1).sum::<u64>(), holders(db).await)), undone)),
         }
     }
 }
@@ -687,25 +696,39 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
             limit_lock_wait(db).await?;
         }
         let result = db.script_or_wait(&m.sql).await;
-        if d == Dialect::Mysql {
-            reset_lock_wait(db).await?;
-        }
+        let reset = if d == Dialect::Mysql { reset_lock_wait(db).await } else { Ok(()) };
         if let Err(e) = result {
-            for index in invalid(db).await.unwrap_or_default() {
-                if !before.contains(&index) {
-                    let _ = db.exec(&format!("drop index concurrently if exists {index}")).await;
+            let mut dropped = true;
+            match invalid(db).await {
+                Ok(now) => {
+                    for index in now.iter().filter(|i| !before.contains(i)) {
+                        dropped &= db.exec(&format!("drop index concurrently if exists {index}")).await.is_ok();
+                    }
                 }
+                Err(_) => dropped = false,
             }
             if record {
                 let _ = db.exec_with(&format!("delete from {HISTORY_TABLE} where name = {}", db.param(1)), &[&m.name]).await;
             }
-            return Err(e);
+            // A statement that gave up waiting for a lock changed nothing, and SQLite's run whole or
+            // not at all; on Postgres, an index build leaves nothing once its invalid index is
+            // dropped, and any other may leave part of itself, as a detach left pending.
+            return Err(match e {
+                Ran::Failed(e) if d == Dialect::Sqlite || (dropped && crate::sql::builds_index_alone(&m.sql, d)) => Ran::Failed(e),
+                Ran::Failed(e) | Ran::Partly(e) => Ran::Partly(e),
+                waited => waited,
+            });
         }
+        // The statement is in place from here, so a failure is no longer one that left nothing.
+        reset.map_err(Ran::Partly)?;
         if record {
-            let lines = catalog(db).await?;
-            let value = fingerprint_of(db, &lines).await?;
-            db.exec_with(&format!("update {HISTORY_TABLE} set applied_at = {}, fingerprint = {} where name = {}", now_sql(d), db.param(1), db.param(2)), &[&value, &m.name]).await?;
-            store_catalog(db, &m.name, &lines).await?;
+            let recorded = async {
+                let lines = catalog(db).await?;
+                let value = fingerprint_of(db, &lines).await?;
+                db.exec_with(&format!("update {HISTORY_TABLE} set applied_at = {}, fingerprint = {} where name = {}", now_sql(d), db.param(1), db.param(2)), &[&value, &m.name]).await?;
+                store_catalog(db, &m.name, &lines).await
+            };
+            recorded.await.map_err(Ran::Partly)?;
         }
         return Ok(());
     }
@@ -738,10 +761,9 @@ async fn run_once(db: &mut Db, m: &Migration, record: bool) -> Result<(), Ran> {
     if result.is_err() {
         let _ = db.exec("rollback").await;
     }
-    if d == Dialect::Sqlite {
-        db.exec("pragma foreign_keys = on").await?;
-    }
+    let on = if d == Dialect::Sqlite { db.exec("pragma foreign_keys = on").await } else { Ok(()) };
     result?;
+    on.map_err(Ran::Partly)?;
     // The migration has committed: a fingerprint that can't be read now leaves its row pending,
     // which the next deploy refuses, rather than reading as a migration that failed.
     if record {
@@ -1653,10 +1675,9 @@ async fn schema_problems(shadows: &mut Shadows<'_>, b_lane: usize, b: &[String],
         }
     };
     if a != b {
-        let (only_schema, only_migrations) = difference(&a, b);
-        let problem = match (only_schema.is_empty(), only_migrations.is_empty()) {
-            (false, true) => Problem::new("schema-sql-ahead", "The schema is ahead of the migrations").sql(&lane_plan(shadows, b_lane, a_lane, Some(schema_sql)).await.unwrap_or_default()).fix("To write the changes to a migration file", &["reylo migrate new <name>"]),
-            (true, false) => Problem::new("migrations-ahead", format!("The migrations make what {schema} doesn't declare")).sql(&lane_plan(shadows, a_lane, b_lane, None).await.unwrap_or_default()).note(format!("Add it to {schema}, or take it out of the migration that makes it.")),
+        let problem = match sides(&a, b) {
+            (true, false) => Problem::new("schema-sql-ahead", "The schema is ahead of the migrations").sql(&lane_plan(shadows, b_lane, a_lane, Some(schema_sql)).await.unwrap_or_default()).fix("To write the changes to a migration file", &["reylo migrate new <name>"]),
+            (false, true) => Problem::new("migrations-ahead", format!("The migrations make what {schema} doesn't declare")).sql(&lane_plan(shadows, a_lane, b_lane, None).await.unwrap_or_default()).note(format!("Add it to {schema}, or take it out of the migration that makes it.")),
             _ => Problem::new("schema-sql-disagrees", format!("The migrations and {schema} disagree"))
                 .sql(&lane_plan(shadows, b_lane, a_lane, Some(schema_sql)).await.unwrap_or_default())
                 .note(format!("Change {schema} or the migrations so that they agree."))
@@ -2156,7 +2177,7 @@ async fn deploy_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
     let mut applied: Vec<serde_json::Value> = Vec::new();
     for m in &plan.pending {
         let at = std::time::Instant::now();
-        match run(db, m, true).await {
+        match run_undone(db, m, true).await {
             // Its row holds the fingerprint it left, so that a run cut off after it, or a migration
             // after it that fails and leaves part of itself, is seen by the next run.
             Ok(()) => {
@@ -2164,15 +2185,11 @@ async fn deploy_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
                 rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {ms} ms"))));
                 applied.push(serde_json::json!({ "name": m.name, "state": "applied", "ms": ms as u64 }));
             }
-            Err(e) => {
-                failed(&mut rows, m, &e, d, log);
+            Err((e, undone)) => {
+                rows.row(log, &paint("bold red", "✗"), &m.name, "failed");
                 applied.push(serde_json::json!({ "name": m.name, "state": "failed", "error": e.0 }));
-                if started.contains(&m.name.as_str()) {
-                    log("  A run before this one was cut off here, so its change may be in place");
-                    log(&steps(4, &[("See whether it is", &["reylo migrate deploy --dry-run"]), ("Record it if it is, running nothing", &["reylo migrate history push"])]));
-                } else if !may_leave_part(&m.sql, d) {
-                    log(&steps(2, &[("Fix it, lock the fix and deploy again", &["reylo migrate dev", "reylo migrate deploy"])]));
-                }
+                log("");
+                print_problems(&[deploy_failure(m, &e, d, started.contains(&m.name.as_str()), undone)], log);
                 code = 1;
                 break;
             }
@@ -2195,6 +2212,28 @@ fn failed(rows: &mut Rows, m: &Migration, e: &Error, d: Dialect, log: Log<'_>) {
         log("  MySQL commits each statement, so its first statements may be in place");
         log(&steps(4, &[("See which are", &["reylo migrate deploy --dry-run"])]));
     }
+}
+
+/// A migration deploy ran that failed: its error, what of it may be in place, and what to do next.
+/// Where nothing of it is in place ([`run_undone`]), nor of its row, it is said to have rolled back,
+/// and to be fixed and run again; elsewhere, where its change or its row may be in place, the dry run
+/// says which.
+fn deploy_failure(m: &Migration, e: &Error, d: Dialect, started: bool, undone: bool) -> Problem {
+    let problem = Problem::new("migration-failed", format!("The migration {} failed", m.name)).note(&e.0);
+    if started {
+        return problem
+            .note("A run before this one was cut off here, so its change may be in place.")
+            .fix("See whether it is", &["reylo migrate deploy --dry-run"])
+            .fix("Record it if it is, running nothing", &["reylo migrate history push"]);
+    }
+    if !undone {
+        let why = if d == Dialect::Mysql { "MySQL commits each statement, so its first statements may be in place" } else { "It runs outside a transaction, so its change may be in place" };
+        return problem.note(format!("{why}.")).fix("See what is", &["reylo migrate deploy --dry-run"]);
+    }
+    Problem { title: format!("The migration {} failed and was rolled back", m.name), ..problem }
+        .note("Nothing was recorded, so the next deploy runs it again.")
+        .fix("Fix the file, lock the fix and deploy again", &["reylo migrate dev", "reylo migrate deploy"])
+        .fix("If another database already ran it, write a new migration instead", &["reylo migrate new <name>"])
 }
 
 /// What a command says where the fingerprint its last run stored can't be compared.
@@ -3282,11 +3321,15 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         }
         [one] => log(&format!("{} Wrote {one}", paint("green", "✓"))),
         many => {
-            if drafted.lock_safe {
-                log(&format!("{} Wrote {} migrations, so that none blocks writes to a table while it reads every row:", paint("green", "✓"), many.len()));
-            } else {
-                log(&format!("{} Wrote {} migrations, one per statement, since MySQL commits each DDL statement on its own:", paint("green", "✓"), many.len()));
-            }
+            // A file past one per commit is the lock-safe shape's.
+            let unblocking = drafted.lock_safe && many.len() > drafted.commits + 1;
+            let why = match (unblocking, drafted.commits > 0) {
+                (true, true) => "so that none blocks writes to a table while it reads every row, and none uses an enum value it adds",
+                (true, false) => "so that none blocks writes to a table while it reads every row",
+                (false, true) => "since Postgres can't use a new enum value in the migration that adds it",
+                (false, false) => "one per statement, since MySQL commits each DDL statement on its own",
+            };
+            log(&format!("{} Wrote {} migrations, {why}:", paint("green", "✓"), many.len()));
             for path in many {
                 log(&format!("    {path}"));
             }
@@ -3375,6 +3418,9 @@ struct Drafted {
     target: String,
     /// Whether its files are the lock-safe shape's (`locks`), rather than one per MySQL statement.
     lock_safe: bool,
+    /// Where its plan commits partway, each enum's labels before what uses them, a file ending at
+    /// each: how many times.
+    commits: usize,
     /// What it changes, a line each, as `changed_lines` writes it.
     changes: Vec<String>,
 }
@@ -4044,7 +4090,7 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 #[allow(clippy::type_complexity)]
 #[cfg(feature = "cli")]
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
-    let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false, changes: vec![] };
+    let drafted = |texts: Vec<String>, code: i32, notes: Vec<String>, empty: bool| Drafted { texts, code, notes, empty, target: target_name.to_string(), lock_safe: false, commits: 0, changes: vec![] };
     let mut db = Db::open(opts).await?;
     let mut problems = out_of_reach(&mut db, &opts.url).await?;
     problems.extend(unreadable_grants(&mut db, opts, files, Some(schema_sql)).await?);
@@ -4120,6 +4166,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         // reads them all is written in the shape that doesn't, as several files (`locks`).
         let existing = if d == Dialect::Postgres { crate::locks::existing_tables(shadows.db(c)).await? } else { Default::default() };
         let mut split = crate::locks::lock_safe(&plan, &existing);
+        let commits = plan.statements.iter().filter(|s| *s == crate::diff::COMMIT).count();
         // The plan runs on the replay as `deploy` will run its files: one file in one transaction (on
         // SQLite with foreign keys off until it is checked), on MySQL a file per statement, and the
         // lock-safe shape's files one after another. Each says the locks it holds.
@@ -4165,7 +4212,11 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             }
             (failed, hazards) = run_pieces(shadows.db(c2), pieces(&None, &plan)).await?;
             reached = catalog(shadows.db(c2)).await?;
-            notes.push(format!("  {} Written as one file: split so that none blocks writes while it reads every row, it didn't reach {target_name}", paint("yellow", "!")));
+            notes.push(if commits == 0 {
+                format!("  {} Written as one file: split so that none blocks writes while it reads every row, it didn't reach {target_name}", paint("yellow", "!"))
+            } else {
+                format!("  {} Split only after each new enum value: split so that none blocks writes while it reads every row, it didn't reach {target_name}", paint("yellow", "!"))
+            });
         }
         if !hazards.is_empty() && !choices.blocking && failed.is_none() && reached == wanted {
             return Ok(Err(vec![lock_problem(&hazards, &asked, choices)]));
@@ -4176,19 +4227,22 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         let split_files = split.as_ref().map(|files| files.len());
         let mut texts = match split {
             Some(mut files) => {
-                // The moves first, in a file of their own where the first is an index built concurrently.
+                // The moves first, in a file of their own where the first is an index built
+                // concurrently; past the files that commit an enum's new labels alone.
                 if !moves.is_empty() {
-                    let first = files[0].iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect::<Vec<_>>().join("\n");
+                    let at = commits.min(files.len().saturating_sub(1));
+                    let first = files[at].iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect::<Vec<_>>().join("\n");
                     if runs_alone(&first, d) {
-                        files.insert(0, std::mem::take(&mut moves));
+                        files.insert(at, std::mem::take(&mut moves));
                     } else {
-                        files[0].splice(0..0, std::mem::take(&mut moves));
+                        files[at].splice(0..0, std::mem::take(&mut moves));
                     }
                 }
                 crate::locks::file_texts(&plan, &files)
             }
             None => {
-                plan.statements.splice(0..0, std::mem::take(&mut moves));
+                let at = plan.statements.iter().rposition(|s| s == crate::diff::COMMIT).map_or(0, |c| c + 1);
+                plan.statements.splice(at..at, std::mem::take(&mut moves));
                 plan_files(&plan, d)
             }
         };
@@ -4217,7 +4271,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
             notes.push(format!("      {}", paint("cyan", &create_command(&asked, choices, &names, &[]))));
         }
         if failed.is_none() && reached == wanted {
-            return Ok(Ok(Drafted { lock_safe: split_files.is_some(), changes: changed_lines(&before, &reached), ..drafted(texts, 0, notes, false) }));
+            return Ok(Ok(Drafted { lock_safe: split_files.is_some(), commits, changes: changed_lines(&before, &reached), ..drafted(texts, 0, notes, false) }));
         }
         let mut remaining = Vec::new();
         if let Some(f) = &failed {
@@ -4229,7 +4283,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_nam
         notes.push(paint("bold red", &format!("✗ The migration doesn't reach {target_name}: what remains is written at its top, to finish by hand")));
         notes.extend(remaining.iter().map(|r| format!("  {r}")));
         texts[0] = format!("-- This plan does not reach {target_name} yet. What remains:\n{}\n{}", remaining.iter().map(|r| format!("--   {}", r.replace('\n', " "))).collect::<Vec<_>>().join("\n"), texts[0]);
-        Ok(Ok(Drafted { lock_safe: split_files.is_some(), ..drafted(texts, 1, notes, false) }))
+        Ok(Ok(Drafted { lock_safe: split_files.is_some(), commits, ..drafted(texts, 1, notes, false) }))
     }
     .await;
     shadows.finish().await;
@@ -4805,8 +4859,20 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
             Ok(Settled { renames, plan, .. }) => (renames, plan),
             Err(problems) => return Ok(Err(Unreached::Refused(problems))),
         };
+        // Where the plan commits partway, the renames planning ran on the database run again after
+        // the commit, as a migration writes them: an enum's new labels commit alone, and a push that
+        // fails past them leaves every table under its name.
+        let mut statements: Vec<String> = plan.runnable().cloned().collect();
+        if let Some(last) = statements.iter().rposition(|s| s == crate::diff::COMMIT).filter(|_| transactional) {
+            let ran: Vec<String> = renames.iter().filter(|s| !s.starts_with("--")).cloned().collect();
+            if !ran.is_empty() {
+                db.exec("rollback").await?;
+                db.exec("begin").await?;
+                statements.splice(last + 1..last + 1, ran);
+            }
+        }
         let mut committed = false;
-        for s in plan.runnable().chain(then) {
+        for s in statements.iter().chain(then) {
             if let Err(e) = db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await {
                 return Err(if committed { Error(format!("{}\n{COMMITTED}", e.0)) } else { e });
             }
@@ -5132,7 +5198,9 @@ async fn relock(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &
     match reach.filter(|_| whole) {
         Some(Reach::SchemaAhead) => log(&then(note("The schema is ahead of the migrations"), &[("To write the changes to a migration file", &["reylo migrate new <name>"])])),
         Some(Reach::MigrationsAhead) => log(&format!("{} The migrations make what {schema} doesn't declare: add it there, or take it out of the migration", paint("yellow", "!"))),
-        Some(Reach::Differ) => log(&then(format!("{} The migrations and {schema} disagree", paint("yellow", "!")), &[("See how", &["reylo migrate deploy --dry-run"])])),
+        // Either may be what's wanted, schema.sql edited or a migration written by hand, so the lead
+        // says what the migration would hold. A dry run would stop at what db push made.
+        Some(Reach::Differ) => log(&then(format!("{} The migrations and {schema} disagree", paint("yellow", "!")), &[(&format!("To write what {schema} has to a migration file"), &["reylo migrate new <name>"])])),
         Some(Reach::SchemaFails(e)) => log(&format!("{} On an empty database, {schema} fails: {}", paint("yellow", "!"), e.lines().next().unwrap_or_default())),
         Some(Reach::Same) | None => {}
     }
@@ -5167,6 +5235,50 @@ enum Reach {
     SchemaFails(String),
 }
 
+/// Whether `a` has what `b` doesn't, and `b` what `a` doesn't, as `difference` finds it, but for an
+/// enum: one whose values in one are the other's with more among them is only the larger one's
+/// change, since a value is added in place (`alter type … add value … after`) and none is taken out.
+#[cfg(feature = "cli")]
+fn sides(a: &[String], b: &[String]) -> (bool, bool) {
+    let (mut only_a, mut only_b) = difference(a, b);
+    let (mut a_more, mut b_more) = (false, false);
+    only_a.retain(|line| {
+        let Some((name, values)) = enum_values(line) else { return true };
+        let Some((i, other)) = only_b.iter().enumerate().find_map(|(i, l)| enum_values(l).filter(|(n, _)| *n == name).map(|(_, v)| (i, v))) else { return true };
+        if within(&other, &values) {
+            a_more = true;
+        } else if within(&values, &other) {
+            b_more = true;
+        } else {
+            return true;
+        }
+        only_b.remove(i);
+        false
+    });
+    (a_more || !only_a.is_empty(), b_more || !only_b.is_empty())
+}
+
+/// An enum's line, `enum <name> (<values as JSON strings>)`, as its name and values. The name ends at
+/// the first space outside its quotes.
+#[cfg(feature = "cli")]
+fn enum_values(line: &str) -> Option<(&str, Vec<String>)> {
+    let rest = line.strip_prefix("enum ")?;
+    let mut quoted = false;
+    let (k, _) = rest.char_indices().find(|&(_, c)| {
+        quoted ^= c == '"';
+        c == ' ' && !quoted
+    })?;
+    let values = rest[k..].strip_prefix(" (")?.strip_suffix(')')?;
+    Some((&rest[..k], serde_json::from_str(&format!("[{values}]")).ok()?))
+}
+
+/// Whether `fewer` is `more` with some of its values left out, in the same order.
+#[cfg(feature = "cli")]
+fn within(fewer: &[String], more: &[String]) -> bool {
+    let mut rest = more.iter();
+    fewer.len() < more.len() && fewer.iter().all(|v| rest.any(|m| m == v))
+}
+
 /// The lock as the database's history makes it: the migrations it ran, in its order, with
 /// schema.sql's checksum where their replay reaches schema.sql. None where the lock already is that.
 #[cfg(feature = "cli")]
@@ -5191,9 +5303,16 @@ async fn locked(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &
         shadows.push(theirs, [Step::script("schema.sql", sql)]);
         let reach = match (shadows.lines(ours).await?, shadows.lines(theirs).await?) {
             (Ok(a), Ok(b)) if a == b => Reach::Same,
-            (Ok(a), Ok(b)) => match difference(&a, &b) {
-                (made, declared) if made.is_empty() && !declared.is_empty() => Reach::SchemaAhead,
-                (made, declared) if !made.is_empty() && declared.is_empty() => Reach::MigrationsAhead,
+            // A database that has schema.sql and not what its migrations make (db push made it) has
+            // what the next migration writes, whatever changed. What it doesn't compare (a comment)
+            // can match both.
+            (Ok(a), Ok(b)) if {
+                let live = catalog(db).await?;
+                crate::catalog::same_schema(&live, &b) && !crate::catalog::same_schema(&live, &a)
+            } => Reach::SchemaAhead,
+            (Ok(a), Ok(b)) => match sides(&a, &b) {
+                (false, true) => Reach::SchemaAhead,
+                (true, false) => Reach::MigrationsAhead,
                 _ => Reach::Differ,
             },
             (_, Err((_, e))) => Reach::SchemaFails(e),
@@ -5571,7 +5690,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         }
         rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", started.elapsed().as_millis()))));
     }
-    if rewind_rows.is_empty() && records.is_empty() && pending.is_empty() && base == at_kept {
+    if rewind_rows.is_empty() && records.is_empty() && pending.is_empty() {
         log(&format!("{} Up to date with the migrations", paint("green", "✓")));
     }
     Ok(0)
@@ -5932,8 +6051,18 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
     let mut db = Db::open(opts).await?;
     let mut code = 0;
     for (label, sql) in items {
-        match db.script(sql).await {
-            Ok(()) => log(&format!("{} {label}", paint("green", "✓"))),
+        match db.script_tables(sql, RUN_ROWS_SHOWN).await {
+            Ok(tables) => {
+                log(&format!("{} {label}", paint("green", "✓")));
+                for (k, table) in tables.iter().enumerate() {
+                    if k > 0 {
+                        log("");
+                    }
+                    for line in table_lines(table) {
+                        log(&line);
+                    }
+                }
+            }
             Err(e) => {
                 log(&paint("bold red", &format!("✗ {label}")));
                 log(&format!("  {e}"));
@@ -5957,9 +6086,92 @@ pub async fn run_sql(opts: &Options, items: &[(String, String)], log: Log<'_>) -
     Ok(code)
 }
 
+/// How many rows `reylo run` shows of what a statement returns.
+#[cfg(feature = "cli")]
+const RUN_ROWS_SHOWN: usize = 50;
+
+/// What a statement returned, as `reylo run` shows it: a table of the rows it kept under its
+/// columns' names, each value on one line, a number set right and null dim, then how many rows it
+/// returned, and how many of those aren't shown.
+#[cfg(feature = "cli")]
+fn table_lines(table: &crate::db::Table) -> Vec<String> {
+    const WIDEST: usize = 60;
+    let cell = |value: &Option<String>| -> Option<String> {
+        let text = value.as_ref()?.replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t");
+        Some(if text.chars().count() > WIDEST { format!("{}…", text.chars().take(WIDEST - 1).collect::<String>()) } else { text })
+    };
+    let rows: Vec<Vec<Option<String>>> = table.rows.iter().map(|row| row.iter().map(cell).collect()).collect();
+    let width = |i: usize| rows.iter().map(|r| r[i].as_ref().map_or(4, |v| v.chars().count())).chain([table.columns[i].chars().count()]).max().unwrap_or(0);
+    let widths: Vec<usize> = (0..table.columns.len()).map(width).collect();
+    let numeric: Vec<bool> = (0..table.columns.len()).map(|i| rows.iter().any(|r| r[i].is_some()) && rows.iter().all(|r| r[i].as_ref().is_none_or(|v| v.parse::<f64>().is_ok()))).collect();
+    let pad = |text: &str, painted: String, i: usize| {
+        let gap = " ".repeat(widths[i] - text.chars().count());
+        if numeric[i] { format!("{gap}{painted}") } else { format!("{painted}{gap}") }
+    };
+    let line = |cells: Vec<String>| format!("  {}", cells.join("  ")).trim_end().to_string();
+    let mut out = vec![line(table.columns.iter().enumerate().map(|(i, c)| pad(c, paint("bold", c), i)).collect())];
+    out.push(line(widths.iter().map(|w| paint("dim", &"─".repeat(*w))).collect()));
+    for row in &rows {
+        out.push(line(row.iter().enumerate().map(|(i, v)| match v {
+            Some(v) => pad(v, v.clone(), i),
+            None => pad("null", paint("dim", "null"), i),
+        }).collect()));
+    }
+    let total = table.total;
+    let counted = format!("  Returned {total} row{}", if total == 1 { "" } else { "s" });
+    out.push(paint("dim", &if total > rows.len() { format!("{counted}, {} not shown", total - rows.len()) } else { counted }));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_statements_rows_show_as_a_table() {
+        set_color(false);
+        let t = |columns: &[&str], rows: &[&[Option<&str>]], total: usize| crate::db::Table { columns: columns.iter().map(|c| c.to_string()).collect(), rows: rows.iter().map(|r| r.iter().map(|v| v.map(String::from)).collect()).collect(), total };
+        let authors = t(&["name", "score", "bio"], &[&[Some("Ada"), Some("3"), None], &[Some("Grace"), Some("12"), Some("line one\nline two")]], 2);
+        assert_eq!(table_lines(&authors).join("\n"), "  name   score  bio\n  ─────  ─────  ──────────────────\n  Ada        3  null\n  Grace     12  line one\\nline two\n  Returned 2 rows");
+        // Of a statement's rows, those kept are shown, and the count says how many weren't.
+        assert_eq!(table_lines(&t(&["name", "score", "bio"], &[&[Some("Ada"), Some("3"), None]], 51)).join("\n"), "  name  score  bio\n  ────  ─────  ────\n  Ada       3  null\n  Returned 51 rows, 50 not shown");
+        assert_eq!(table_lines(&t(&["n"], &[], 0)).join("\n"), "  n\n  ─\n  Returned 0 rows");
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn a_libsql_script_splits_where_sqlite_ends_each_statement() {
+        // A column named end in a trigger's body, a `;` in a string and in a comment, and a last statement with no `;`.
+        let script = "create trigger t after insert on a begin insert into audit values (new.end); end;\n-- a note; and more\ninsert into a values ('x;y');\n\nselect 1";
+        assert_eq!(crate::db::sqlite_statements(script), ["create trigger t after insert on a begin insert into audit values (new.end); end;", "\n-- a note; and more\ninsert into a values ('x;y');", "\n\nselect 1"]);
+        assert!(crate::db::sqlite_statements("-- nothing;\n").is_empty());
+        // An empty statement is none, a comment before its `;` or not.
+        assert_eq!(crate::db::sqlite_statements("select 1;; -- note\n; select 2;"), ["select 1;", " select 2;"]);
+    }
+
+    #[test]
+    #[cfg(feature = "cli")]
+    fn an_enum_with_a_value_added_is_only_its_sides_change() {
+        let lines = |values: &str| vec!["table public.t".to_string(), format!("enum public.visibility ({values})")];
+        let (two, three) = (lines(r#""private", "public""#), lines(r#""private", "team", "public""#));
+        assert_eq!(sides(&two, &three), (false, true));
+        assert_eq!(sides(&three, &two), (true, false));
+        // Reordered, or one taken out and another added, each side has what the other doesn't.
+        assert_eq!(sides(&lines(r#""public", "private""#), &two), (true, true));
+        assert_eq!(sides(&lines(r#""private", "team""#), &two), (true, true));
+        // A quoted name with a space and a parenthesis in it is one name.
+        let quoted = |values: &str| vec![format!("enum public.\"state (internal)\" ({values})")];
+        assert_eq!(sides(&quoted(r#""a""#), &quoted(r#""a", "b""#)), (false, true));
+        // A value with a comma in it is one value.
+        assert_eq!(sides(&lines(r#""a, b""#), &lines(r#""a, b", "c""#)), (false, true));
+        assert_eq!(sides(&lines(r#""a""#), &lines(r#""a, b""#)), (true, true));
+        // Another line that differs still counts.
+        let mut more = three.clone();
+        more.push("column public.t.x integer".into());
+        assert_eq!(sides(&more, &two), (true, false));
+        assert_eq!(sides(&[two.clone(), vec!["column public.t.x integer".into()]].concat(), &three), (true, true));
+    }
 
     #[test]
     fn a_new_types_default_grant_is_left_out() {
