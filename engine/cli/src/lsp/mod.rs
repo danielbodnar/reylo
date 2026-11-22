@@ -540,6 +540,36 @@ struct Span {
     class: Class,
 }
 
+/// The reading of a MySQL document under the `sql_mode` that finds the least of it wrong, the
+/// default's where it is no worse: the editor doesn't know the session's mode, and a `"name"` under
+/// `ANSI_QUOTES`, a string a backslash ends under `NO_BACKSLASH_ESCAPES` and `COUNT (*)` under
+/// `IGNORE_SPACE` are errors of the default mode alone. One mode reads the whole document, as one
+/// session runs it, so a statement another mode reads differently can't excuse an error of its own.
+fn mysql_reading<'s>(tree: syntax::Tree<'s>, written: &'s str) -> syntax::Tree<'s> {
+    use syntax::mysql::{parse_tree_with, Options};
+    // How much of the text sits in a statement with an error, then how many errors.
+    let wrong = |tree: &syntax::Tree<'_>| {
+        let spans = syntax::statements(Dialect::Mysql, tree);
+        let mut bad: Vec<(u32, u32)> = tree.errors.iter().map(|e| spans.iter().copied().find(|&(start, end)| start <= e.start && e.start <= end).unwrap_or((e.start, e.end))).collect();
+        bad.sort_unstable();
+        bad.dedup();
+        (bad.iter().map(|&(start, end)| end.saturating_sub(start)).sum::<u32>(), tree.errors.len())
+    };
+    let mut best = (wrong(&tree), tree);
+    for mode in 1..8u8 {
+        let opts = Options { ansi_quotes: mode & 1 != 0, backslash_escapes: mode & 2 == 0, ignore_space: mode & 4 != 0, ..Options::default() };
+        let other = parse_tree_with(written, opts);
+        let score = wrong(&other);
+        if score < best.0 {
+            best = (score, other);
+        }
+        if best.1.errors.is_empty() {
+            break;
+        }
+    }
+    best.1
+}
+
 /// What a document's text reads as, kept until the text changes.
 struct Reading {
     spans: Vec<Span>,
@@ -551,7 +581,10 @@ struct Reading {
 impl Reading {
     fn of(dialect: Dialect, text: &str) -> Reading {
         let written = for_grammar(dialect, text);
-        let tree = syntax::parse(dialect, &written);
+        let mut tree = syntax::parse(dialect, &written);
+        if dialect == Dialect::Mysql && !tree.errors.is_empty() {
+            tree = mysql_reading(tree, &written);
+        }
         let toks = tokens(dialect, &tree, text);
         let spans: Vec<Span> = toks.iter().map(|t| Span { start: t.start, end: t.end, class: t.class }).collect();
         let last = spans.last().map_or(0, |s| s.end as usize);
@@ -1470,6 +1503,19 @@ fn describe(place: &Place, analysis: Option<&Analysis>, stmt: &[Tok<'_>], names:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_mysql_under_the_sql_mode_that_finds_the_least_wrong() {
+        assert!(Reading::of(Dialect::Mysql, "select \"a\" from \"t\"").errors.is_empty());
+        assert!(Reading::of(Dialect::Mysql, "select 'a\\', 'b'").errors.is_empty());
+        assert!(Reading::of(Dialect::Mysql, "SELECT COUNT (*) FROM t").errors.is_empty());
+        assert!(Reading::of(Dialect::Mysql, "SET SESSION sql_mode = '';\nSELECT \"a\" \"b\" \"c\";\nSET SESSION sql_mode = 'ANSI_QUOTES';\nSELECT \"i\" FROM (SELECT 1 AS i) AS \"t\";").errors.is_empty());
+        for text in ["select \"a\" from \"t\";\nselect from where", "select 'a\\';\nselect from where;"] {
+            let errors = Reading::of(Dialect::Mysql, text).errors;
+            assert_eq!(errors.len(), 1, "{text}: {errors:?}");
+            assert!(errors[0].0 as usize >= text.find("select from").unwrap(), "{text}: {errors:?}");
+        }
+    }
 
     #[test]
     fn reads_a_framed_message_past_other_headers() {
