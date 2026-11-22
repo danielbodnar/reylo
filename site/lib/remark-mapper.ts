@@ -502,7 +502,7 @@ const codeNode = (lang: string, value: string): MdNode => ({ type: 'code', lang,
  * (`void` where the statement has none) and Returns (`void` for a write that returns nothing), holding what `.run()` takes and resolves to, read off
  * the statement's captured module, in a <DialectTabs follow> that follows the page's dialect choice.
  */
-function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, page: string) {
+function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, page: string, hover: (block: Block) => string | undefined) {
   const width = TYPE_WIDTH[INFERENCE_CARD_LAYOUT];
   const captures = readInferenceCaptures();
   const cards: { card: MdNode; parent: MdNode }[] = [];
@@ -524,7 +524,7 @@ function renderInferenceCards(tree: MdNode, blocks: Block[], modules: Modules, p
       const { params, row, cardinality } = moduleTypes(module);
       const rows: MdNode[] = [];
       if (block.schema !== undefined) rows.push(jsx('InferenceCardRow', [['label', 'Schema']], [codeNode('sql', block.schema)]));
-      rows.push(jsx('InferenceCardRow', [['label', 'Query']], [codeNode('sql', block.node.value)]));
+      rows.push(jsx('InferenceCardRow', [['label', 'Query']], [{ ...codeNode('sql', block.node.value), meta: hover(block) ?? null }]));
       const typescript = [
         jsx('InferenceCardRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]),
         jsx('InferenceCardRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]),
@@ -609,26 +609,29 @@ export function remarkMapper() {
       const index = block.parent.children!.indexOf(block.node);
       block.parent.children!.splice(index, 1, jsx('DialectTabs', [['follow', null]], panels));
     }
+    // Each name of a table in a statement shows the table's declaration on hover (lib/table-hovers.ts):
+    // the page's schema.sql blocks of the statement's dialect, or of the page's one dialect.
+    const schemas = new Map<Dialect, string>();
+    for (const b of all!) if (b.name === SCHEMA_FILE && !b.inferenceCard) schemas.set(b.dialect, `${schemas.get(b.dialect) ?? ''}${b.node.value}\n`);
+    const pageSchema = (dialect: Dialect) => schemas.get(dialect) ?? (schemas.size === 1 ? [...schemas.values()][0] : undefined);
+    const hoverMeta = (schema: string | undefined, code: string) => {
+      const tables = schema === undefined ? new Map<string, string>() : declarations(schema);
+      return tables.size ? tablesMeta(hashOf(`${schema}\0${code}`), tables) : undefined;
+    };
     mergeDialectFiles(blocks);
     renderErrors(tree, blocks, page);
     try {
-      renderInferenceCards(tree, blocks, modules, page);
+      renderInferenceCards(tree, blocks, modules, page, (block) => hoverMeta(block.schema ?? pageSchema(block.dialect), block.node.value));
     } catch (e) {
       throw new Error((e as Error).message.startsWith(page) ? (e as Error).message : `${page}: ${(e as Error).message}`);
     }
     // The dialect and the file name are read (and `play`, by lib/live/inference.ts); Shiki and Twoslash do not know the attributes.
     for (const { node } of blocks) if (node.meta) node.meta = node.meta.replace(/(?:^|\s)(?:dialect|file|strict|play)=(?:"[^"]*"|'[^']*'|\S+)/g, '').trim();
-    // Each name of a table in a statement shows the table's declaration on hover (lib/table-hovers.ts):
-    // the page's schema.sql blocks of the statement's dialect, or of the page's one dialect.
-    const schemas = new Map<Dialect, string>();
-    for (const b of all!) if (b.name === SCHEMA_FILE && !b.inferenceCard) schemas.set(b.dialect, `${schemas.get(b.dialect) ?? ''}${b.node.value}\n`);
     for (const b of blocks) {
       // A statement in every dialect is one node with a block per dialect: it takes the first's tables.
       if ((b.node.lang ?? '') !== 'sql' || b.name === SCHEMA_FILE || b.inferenceCard || /(?:^|\s)tables=/.test(b.node.meta ?? '')) continue;
-      const schema = schemas.get(b.dialect) ?? (schemas.size === 1 ? [...schemas.values()][0] : undefined);
-      if (!schema) continue;
-      const tables = declarations(schema);
-      if (tables.size) b.node.meta = `${b.node.meta ?? ''} ${tablesMeta(hashOf(`${schema}\0${b.node.value}`), tables)}`.trim();
+      const meta = hoverMeta(pageSchema(b.dialect), b.node.value);
+      if (meta) b.node.meta = `${b.node.meta ?? ''} ${meta}`.trim();
     }
   };
 }

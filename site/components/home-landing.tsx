@@ -27,31 +27,30 @@ const SHOWN = [
   'computed-columns',
   'nullable-parameters',
   'filtering-by-a-list',
-  'dynamic-filtering',
   'unique-keys',
   'aggregates',
   'aggregates:2',
   'window-functions',
-  'subqueries:2',
-  'nested-fetching',
   'returning-inserts',
   'returning-inserts:2',
   'returning-inserts:4',
-  'bulk-inserts',
   'unions',
   'json',
   'json-schema',
-  'typed-json:2',
+  // The longest queries last, so that clicking through in order meets the short ones first.
   'oneof',
-  'oneof:2',
+  'subqueries:2',
+  'bulk-inserts',
+  'nested-fetching',
+  'typed-json:2',
+  'dynamic-filtering',
 ];
 /** A tab's own name and caption where the card is a later one in its section, whose heading and lede lean on the card before it. */
 const OWN: Record<string, { title?: string; lede?: string }> = {
   'left-joins:2': { title: 'Narrowing in where' },
   'aggregates:2': { title: 'Rollups' },
   'returning-inserts:2': { title: 'Upserts', lede: 'An upsert returns one row, whether it inserts the row or updates it.' },
-  'returning-inserts:4': { title: 'Old and new values' },
-  'oneof:2': { title: 'Union parameters', lede: "A parameter's `oneOf` schema types it as a discriminated union." },
+  'returning-inserts:4': { title: 'Old and new' },
 };
 const EXAMPLES = SHOWN.map((id) => data.examples.find((e) => e.id === id))
   .filter((e): e is HomeExample => !!e)

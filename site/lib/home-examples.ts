@@ -168,7 +168,8 @@ export async function buildHomeData(site = process.cwd(), modules: Modules = rea
   const ts = main.split('\n').filter((l) => !l.startsWith('// @')).join('\n').replace(/\n+author\?\.[\s\S]*$/, '');
   const data: HomeData = {
     examples,
-    intro: { ...statement(intro.node.value, pageTables.postgres ?? new Map()), ts: lines(ts, 'ts'), type: lines(`const author: ${formatType(resultType(row, cardinality), 44)}`, 'ts') },
+    // The hero shows the statement without the docs' leading comment, which points at the hovers.
+    intro: { ...statement(intro.node.value.replace(/^(?:--[^\n]*\n)+/, ''), pageTables.postgres ?? new Map()), ts: lines(ts, 'ts'), type: lines(`const author: ${formatType(resultType(row, cardinality), 44)}`, 'ts') },
   };
   highlighter.dispose();
   return data;

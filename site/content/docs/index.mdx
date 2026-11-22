@@ -9,9 +9,7 @@ description: Reylo is an engine that infers type information from SQL queries, r
 
 Reylo is a type inference engine for SQL. It lets you import SQL queries into your TypeScript files with full type information.
 
-If you have a query like this:
-
-<SchemaQuery>
+<PageSchema>
 
 ```sql file="schema.sql" tab="Postgres" tab-group="dialect"
 create extension if not exists pg_jsonschema;
@@ -115,15 +113,18 @@ create table events (
 ) strict;
 ```
 
+</PageSchema>
+
+If you have a query like this:
+
 ```sql title="get_author.sql"
+-- hover a table to see its declaration
 select u.id, u.name, count(p.id)::int as post_count
 from users u
 left join posts p on p.user_id = u.id
 where u.id = :id::int
 group by u.id
 ```
-
-</SchemaQuery>
 
 You can import it like this. Hover over `author` to see the inferred type!
 
