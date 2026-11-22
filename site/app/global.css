@@ -579,6 +579,22 @@
   --saber-glow-strongest: drop-shadow(0 0 2px rgb(255 224 96 / 1)) drop-shadow(0 0 9px rgb(255 200 31 / 0.85)) drop-shadow(0 0 26px rgb(255 184 0 / 0.55));
 }
 
+/* A table's declaration in its hover (lib/table-hovers.ts): a statement keeps its lines, where a
+   Twoslash type wraps to the popup's width. */
+.reylo-table-decl code {
+  white-space: pre;
+}
+
+/* As wide as its longest line where the window allows, and scrolled where it doesn't. */
+.fd-twoslash-popover:has(.reylo-table-decl) {
+  width: max-content;
+  max-width: min(46rem, calc(100vw - 2rem));
+}
+
+.reylo-table-decl {
+  overflow-x: auto;
+}
+
 /* ── Saber light ───────────────────────────────────────────────────────────────
    By night the yellow gives off a little light, as a lightsaber's blade does: a soft gold glow
    under each link's rule and around the step numbers, the callout's bulb and the "Leave a star!"

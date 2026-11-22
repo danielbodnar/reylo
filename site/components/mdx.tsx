@@ -20,6 +20,9 @@ export function getMDXComponents(components?: MDXComponents) {
   return docsMdxComponents({
     // The setup instructions for a coding agent at the top of Setup.
     AgentPrompt: ({ children }: { children: ReactNode }) => <AgentPrompt title="Set up Reylo with an agent">{children}</AgentPrompt>,
+    // A page's schema.sql blocks, which the capture analyzes the page's statements against and each
+    // table's hover shows (lib/table-hovers.ts), and which the page itself doesn't show.
+    PageSchema: () => null,
     // The figure under How it works (components/how-it-works-diagram.tsx).
     HowItWorksDiagram,
     // The records and commands of Reylo Migrate, at the top of the Reylo Migrate page (components/migrations-diagram.tsx).

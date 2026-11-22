@@ -8,6 +8,7 @@ import { SHOW_RUST } from './languages.ts';
 import { pageFiles } from './page-files.ts';
 import { rustContent } from './rust-content.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
+import { declarations, tablesMeta } from './table-hovers.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 
 export { pageFiles };
@@ -586,10 +587,12 @@ export function remarkMapper() {
     compiler?.addDependency(path.join(process.cwd(), 'lib', 'inference-captures.json'));
     const page = !file.path ? 'the page' : path.relative(process.cwd(), file.path).startsWith('..') ? file.path : path.relative(process.cwd(), file.path);
     let blocks: Block[];
+    let all: Block[];
     let plans: Plan[];
     try {
       blocks = collect(tree);
-      plans = plan(inPage(file.path, blocks), new Set(blocks));
+      all = inPage(file.path, blocks);
+      plans = plan(all, new Set(blocks));
       if (file.path) compiled.set(path.resolve(file.path), imports(plans));
     } catch (e) {
       throw new Error(`${page}: ${(e as Error).message}`);
@@ -615,5 +618,17 @@ export function remarkMapper() {
     }
     // The dialect and the file name are read (and `play`, by lib/live/inference.ts); Shiki and Twoslash do not know the attributes.
     for (const { node } of blocks) if (node.meta) node.meta = node.meta.replace(/(?:^|\s)(?:dialect|file|strict|play)=(?:"[^"]*"|'[^']*'|\S+)/g, '').trim();
+    // Each name of a table in a statement shows the table's declaration on hover (lib/table-hovers.ts):
+    // the page's schema.sql blocks of the statement's dialect, or of the page's one dialect.
+    const schemas = new Map<Dialect, string>();
+    for (const b of all!) if (b.name === SCHEMA_FILE && !b.inferenceCard) schemas.set(b.dialect, `${schemas.get(b.dialect) ?? ''}${b.node.value}\n`);
+    for (const b of blocks) {
+      // A statement in every dialect is one node with a block per dialect: it takes the first's tables.
+      if ((b.node.lang ?? '') !== 'sql' || b.name === SCHEMA_FILE || b.inferenceCard || /(?:^|\s)tables=/.test(b.node.meta ?? '')) continue;
+      const schema = schemas.get(b.dialect) ?? (schemas.size === 1 ? [...schemas.values()][0] : undefined);
+      if (!schema) continue;
+      const tables = declarations(schema);
+      if (tables.size) b.node.meta = `${b.node.meta ?? ''} ${tablesMeta(hashOf(`${schema}\0${b.node.value}`), tables)}`.trim();
+    }
   };
 }

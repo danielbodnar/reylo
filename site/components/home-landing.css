@@ -68,6 +68,17 @@
   }
 }
 
+/* The wordmark brand/ draws, as the docs' chrome has it (components/brand.tsx), at the same 24px, and
+   lit as one shape: the glow goes on the whole drawing, not on the mark and the word apart. */
+.rh .rh-brand svg {
+  height: 1.5rem;
+  width: auto;
+}
+
+.dark .rh .rh-brand {
+  text-shadow: none;
+}
+
 .dark .rh-star-note {
   color: #ffd43b;
   filter: var(--saber-glow-strong);

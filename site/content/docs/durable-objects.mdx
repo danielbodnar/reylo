@@ -14,9 +14,7 @@ A Durable Object's database is SQLite, so everything on the [SQLite](/sqlite) pa
 | Tests | Vitest inside workerd, with Cloudflare's Vitest plugin |
 | Example | [cloudflare-workers](https://github.com/reylosql/reylo/tree/main/examples/cloudflare-workers), a Worker with D1 and a Durable Object that runs locally with no Cloudflare account |
 
-The examples on this page use this schema:
-
-<Details summary="View the schema behind the examples" id="schema">
+<PageSchema>
 
 ```sql file="schema.sql" dialect="sqlite"
 create table users (
@@ -27,7 +25,7 @@ create table users (
 ) strict;
 ```
 
-</Details>
+</PageSchema>
 
 ## Setup
 
