@@ -14,7 +14,7 @@ import './home-landing.css';
 export function Nav({ stars }: { stars?: number }) {
   return (
     <nav className="ml-nav rh-nav">
-      <a className="ml-brand rh-brand" href="/" aria-label="Reylo">
+      <a className="ml-brand ml-wordmark" href="/" aria-label="Reylo">
         <Wordmark />
       </a>
       <div className="ml-links rh-links">

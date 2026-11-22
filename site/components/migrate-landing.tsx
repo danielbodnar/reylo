@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { DATABASES, HOSTS, type Logo } from './host-logos';
+import { MigrateWordmark } from './migrate-wordmark';
 import { VARIADIC_SQUARE, VARIADIC_SQUARES } from './variadic-mark';
-import { wordmark } from './wordmark';
 import { githubUrl, migrateDocsUrl } from '@/lib/layout.shared';
 
 /**
@@ -15,9 +15,8 @@ export function MigrateLanding({ stars }: { stars?: number }) {
   return (
     <div className="ml">
       <nav className="ml-nav">
-        <a className="ml-brand" href="/migrate">
-          <Mark />
-          Reylo Migrate
+        <a className="ml-brand ml-wordmark" href="/migrate" aria-label="Reylo Migrate">
+          <MigrateWordmark />
         </a>
         <div className="ml-links">
           <a href={migrateDocsUrl}>Docs</a>
@@ -116,14 +115,6 @@ export function VariadicMark() {
       {VARIADIC_SQUARES.map((q) => (
         <rect key={`${q.x},${q.y}`} x={q.x} y={q.y} width={VARIADIC_SQUARE.size} height={VARIADIC_SQUARE.size} rx={VARIADIC_SQUARE.rx} fill={q.fill} />
       ))}
-    </svg>
-  );
-}
-
-export function Mark({ className }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 400 235.47" fill="currentColor" aria-hidden="true">
-      <path d={wordmark.mark} />
     </svg>
   );
 }

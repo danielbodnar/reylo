@@ -1264,6 +1264,16 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   width: auto;
 }
 
+/* The wordmark brand/ draws (components/wordmark.tsx, components/migrate-wordmark.tsx), as the docs'
+   chrome has it (components/brand.tsx): 24px tall, lit as one shape by the glow on the svg. */
+.ml-brand.ml-wordmark svg {
+  height: 1.5rem;
+}
+
+.dark .ml-brand.ml-wordmark {
+  text-shadow: none;
+}
+
 .ml-links {
   display: flex;
   gap: 1.75rem;
