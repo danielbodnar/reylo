@@ -161,7 +161,7 @@
 
 .rh-switch button[data-state='active'] {
   color: var(--color-fd-primary);
-  background: color-mix(in oklab, var(--color-fd-primary) 14%, transparent);
+  background: color-mix(in oklab, var(--dk-accent) 14%, transparent);
 }
 
 /* A table's name in a statement: a dotted underline, as Twoslash marks what it can show; on hover or

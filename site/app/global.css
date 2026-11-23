@@ -18,8 +18,9 @@
    The type is IBM Plex Sans and Geist Mono (app/fonts.css). Every surface and rule is
    a colourless grey, near-black by night and white by day, so the yellow is
    the page's only colour: it marks links, the active table-of-contents entry
-   and inline code. In light mode the yellow darkens to ochre wherever it
-   carries text, so it keeps its contrast on white.
+   and inline code. In light mode the yellow is a fill alone (a button, a rule, a wash, the
+   blade) and what it would colour as text is near-black, since yellow text can't hold its
+   contrast on white; the hero's "fully typed" is the one exception, large enough to read.
 
    The yellow is a lightsaber's: by night the hero recording's yellow, #fbc40e,
    by day a warm gold. By night the yellow that marks something also gives off a little
@@ -38,7 +39,7 @@
   --color-fd-card: hsl(0, 0%, 98%);
   --color-fd-card-foreground: hsl(0, 0%, 16%);
   --color-fd-border: hsl(0, 0%, 89%);
-  --color-fd-primary: hsl(40, 100%, 28%);
+  --color-fd-primary: hsl(0, 0%, 9%);
   --color-fd-primary-foreground: hsl(0, 0%, 100%);
   --color-fd-secondary: hsl(0, 0%, 97%);
   --color-fd-secondary-foreground: hsl(0, 0%, 16%);
@@ -627,10 +628,10 @@
   text-shadow: var(--saber-text-glow-strong);
 }
 
-/* The wordmark in the chrome (components/brand.tsx) is the yellow, as the hero's mark is, and by
-   night it gives off the saber glow. */
+/* The wordmark in the chrome (components/brand.tsx) is the accent: the yellow by night, where it
+   gives off the saber glow, and near-black by day, as brand/ sets the mark on white. */
 .reylo-brand {
-  color: var(--dk-accent);
+  color: var(--color-fd-primary);
 }
 
 .dark .reylo-brand svg {
@@ -1375,7 +1376,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 
 .ml-h1 em {
   font-style: normal;
-  color: var(--color-fd-primary);
+  color: var(--dk-accent);
 }
 
 .ml-lede {
@@ -1784,14 +1785,14 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 .ml-docs-primary {
   height: calc(4rem - 1px);
   margin-block: 0.5px;
-  border-color: var(--color-fd-primary);
-  background: var(--color-fd-primary);
+  border-color: var(--dk-accent);
+  background: var(--dk-accent);
   color: hsl(0 0% 6%);
   font-weight: 600;
 }
 
 .ml-docs-primary:hover {
-  background: var(--color-fd-primary);
+  background: var(--dk-accent);
   filter: brightness(1.08);
 }
 
