@@ -70,7 +70,7 @@
 
 .dark .rh-star-note {
   color: #ffd43b;
-  filter: var(--saber-glow-strong);
+  filter: var(--saber-glow);
 }
 
 /* ── Code ── */
