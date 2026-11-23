@@ -134,9 +134,6 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
   const files = use(loadPage(path));
   const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} stars={stars} /> } : undefined);
   const main = slug === '';
-  // Reylo Migrate's docs are a site of their own, on one page under its landing page (/migrate): no
-  // list of the docs' pages, so docs-kit draws its table of contents on the left.
-  const standalone = STANDALONE.has(slug);
   // A page named for a file (`.reylo.yaml`) is titled in code, as the list writes it.
   const code = pageGroups.some((g) => g.items.some((item) => 'code' in item && item.code && item.href === url));
 
@@ -160,7 +157,7 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       toc={((toc) => (toc.length < 2 ? [] : toc))(files.flatMap((file) => file.toc).filter((item) => item.depth <= 3))}
       fold={FOLD[slug] ?? []}
       centered={CENTERED[slug]}
-      pages={standalone ? undefined : { groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: url }}
+      pages={{ groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: url }}
       pageTitle={pageName(slug, title)}
       brand={<Brand />}
       github={githubUrl}
@@ -184,9 +181,6 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
     </DocsShell>
   );
 }
-
-/** Reylo Migrate's pages, a site of their own outside the docs' page list. */
-const STANDALONE = new Set(['migrate', 'migrate-compare']);
 
 /** The current page's name on the phone's strip, as the list names it. */
 function pageName(slug: string, title: string): string {
