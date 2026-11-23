@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { CompareTable } from './compare-table';
 import { DATABASES, HOSTS, type Logo } from './host-logos';
 import { Install, Nav } from './home-chrome';
 import { MigrateWordmark } from './migrate-wordmark';
@@ -82,6 +83,12 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       <Row n={11} title="Switch easily" visual={<Term lines={INIT} />}>
         <p>One command introspects your current schema, generates <code>schema.sql</code>, and creates your initial <code>migrations/init.sql</code>.</p>
       </Row>
+
+      <section className="ml-table">
+        <h2>Compared with other migration tools</h2>
+        <p>Hover a cross to see why.</p>
+        <CompareTable set="migrate" />
+      </section>
 
       <section className="ml-end">
         <h2>Ship faster with Reylo</h2>
@@ -229,12 +236,30 @@ function usePlayer(script: Script, onEdit?: (edited: boolean) => void): Line[] {
   return lines;
 }
 
-/** A printed line in the CLI's colours: ✓ and + green, ✗ red, ! and ↺ yellow; a » note, the lead over a command (an indented line from a capital to a colon) and a diff's `---` and `+++` headers dim whole; the command on its own line cyan. */
+/** A printed line in the CLI's colours: ✓ and + green, ✗ and - red, !, ↺ and ~ yellow; a » note, the lead over a command (an indented line from a capital to a colon) and a diff's `---` and `+++` headers dim whole; the command on its own line cyan; the words a ~ line changes in place, written as the CLI writes them where colour is off (`[-title-]{+heading+}`), highlighted red and green. */
 function paint(line: string): ReactNode {
+  const changed = line.match(/^(\s*)~ (.*)$/);
+  if (changed) {
+    return (
+      <>
+        {changed[1]}
+        <span className="ml-wn">~</span>{' '}
+        {changed[2].split(/(\[-.*?-\]|\{\+.*?\+\})/).map((part, i) =>
+          i % 2 ? (
+            <span key={i} className={part.startsWith('[') ? 'ml-rm' : 'ml-ad'}>
+              {part.slice(2, -2)}
+            </span>
+          ) : (
+            part
+          ),
+        )}
+      </>
+    );
+  }
   if (/^\s*» /.test(line) || /^\s+[A-Z].*:$/.test(line) || /^\s+(---|\+\+\+) /.test(line)) return <span className="ml-mu">{line}</span>;
-  const m = line.match(/^(\s*)(✓|✗|!|\+|↺)(\s.*)?$/);
+  const m = line.match(/^(\s*)(✓|✗|!|\+|-|↺)(\s.*)?$/);
   if (m) {
-    const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' ? 'ml-er' : 'ml-wn';
+    const cls = m[2] === '✓' || m[2] === '+' ? 'ml-ok' : m[2] === '✗' || m[2] === '-' ? 'ml-er' : 'ml-wn';
     return (
       <>
         {m[1]}
@@ -309,10 +334,12 @@ const RENAMES: Script = [
   '$ reylo migrate new tidy_columns',
   "✗ This migration can't tell renames from new columns",
   '',
-  '    posts.title → heading  varchar(100) → varchar(200)',
-  '    users.bio   → about    varchar(200) → text',
+  '    - column posts.title character varying(100)',
+  '    + column posts.heading character varying(200)',
+  '    - column users.bio character varying(200)',
+  '    + column users.about text',
   '',
-  '  For each, rename to keep its rows, or drop it:',
+  '  For each, rename it to keep its rows, or drop it and add the new one:',
   '    --rename posts.title=heading   or   --drop posts.title',
   '    --rename users.bio=about       or   --drop users.bio',
   '  Add the flags you picked to:',
@@ -321,6 +348,10 @@ const RENAMES: Script = [
   'Nothing was changed.',
   '$ reylo migrate new tidy_columns --rename posts.title=heading --drop users.bio',
   '✓ Wrote reylo/migrations/20261104150000_tidy_columns.sql',
+  '  ~ column posts.[-title-]{+heading+} character varying([-100-]{+200+})',
+  '  + column users.about text',
+  '  - column users.bio character varying(200)',
+  '',
   '  ! Drops the column users.bio and its data',
 ];
 

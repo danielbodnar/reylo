@@ -14,11 +14,9 @@ Each workflow below is a few commands of the [CLI](/migrate/cli).
 Push changes to your development database, then write the migration:
 
 ```terminal
-# take the database to schema.sql, with no migration
+# force migrate your database to schema.sql (dev only, possibly destructive)
+# use --watch to push on every save
 $ reylo db push
-
-# or push again on every save
-$ reylo db push --watch
 
 # write the migration; dev records it without running it again
 $ reylo migrate new add_bio
