@@ -50,7 +50,7 @@ export const docsTitle = (title: string) => `${title} — Reylo`;
  */
 export const pageGroups = [
   {
-    label: 'Docs',
+    label: 'Reylo',
     items: [
       { title: 'Intro', href: introUrl },
       { title: SHOW_RUST ? 'Usage with TypeScript' : 'Usage', href: '/typescript' },
@@ -61,9 +61,9 @@ export const pageGroups = [
     ],
   },
   {
-    label: 'Migrations',
+    label: 'Reylo Migrate',
     items: [
-      { title: 'Reylo Migrate', href: migrateDocsUrl },
+      { title: 'Intro', href: migrateDocsUrl },
       { title: 'Usage', href: '/migrate/usage' },
       { title: 'CLI', href: '/migrate/cli' },
       { title: 'Comparison', href: migrateCompareUrl },
