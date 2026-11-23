@@ -1969,6 +1969,11 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
     display: none;
   }
 
+  /* The header's Comparison link doesn't fit beside the others on a phone; the footer keeps it. */
+  .ml-links .ml-compare {
+    display: none;
+  }
+
   .ml-editor {
     width: auto;
   }
