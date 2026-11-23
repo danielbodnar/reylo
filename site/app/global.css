@@ -1992,10 +1992,12 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   visibility: hidden;
 }
 
-/* The file icon in an editor's bar sat 0.63px high against the file name's cap band
-   (optical-spacing's ink-align.mjs, 2026-11-17). A transform moves no layout. */
+/* The file icon in an editor's bar, nudged onto the file name's cap band: 0.625px down measured it
+   0.63px high on 2026-11-17, and a pixel low wherever a window landed on a whole pixel by
+   2026-11-22, so 0.125px lands it level in every window (optical-spacing's ink-align.mjs). A
+   transform moves no layout. */
 .ml-bar svg {
-  translate: 0 0.625px;
+  translate: 0 0.125px;
 }
 
 /* The brand's mark sat 0.56px high against its small-caps name, and the GitHub icon 0.31px high
@@ -2095,8 +2097,13 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   color: var(--ml-win-dim);
 }
 
-/* The first row's migration: SQLite's rebuild wraps rather than scrolls, and the window keeps its
-   height as the tabs turn. */
+/* The diff row's migrations: about nine lines tall, whichever tab shows, each scrolling past that
+   (SQLite's rebuild runs to 25 lines), so the row stays the size of the others. */
+.ml-dialects .ml-stack {
+  max-height: 13rem;
+  overflow-y: auto;
+}
+
 .ml-dialects .ml-sql {
   min-height: 0;
   white-space: pre-wrap;
@@ -2106,25 +2113,6 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
 .ml-term {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-/* A host the whole flow has been run on, marked in the tile's corner. */
-.ml-hosts span {
-  position: relative;
-}
-
-.ml-tested {
-  position: absolute;
-  top: 0.4375rem;
-  right: 0.4375rem;
-  padding: 0 0.375rem;
-  line-height: 1.125rem;
-  border: 1px solid color-mix(in oklab, var(--color-fd-primary) 45%, transparent);
-  border-radius: 999px;
-  font-size: 0.625rem;
-  font-style: normal;
-  font-weight: 600;
-  color: var(--color-fd-primary);
 }
 
 /* ── The star pill (components/star-pill.tsx), on the homepage's nav and the intro ── */

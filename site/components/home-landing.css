@@ -263,6 +263,12 @@
   white-space: nowrap;
 }
 
+/* The Migrate landing's headline, "SQL-first schema and migrations.", whose yellow line is too long to
+   keep whole: it wraps into two, three lines in all, as the homepage's are. */
+.rh-h1.ml-h1-migrate em {
+  white-space: normal;
+}
+
 /* The headline is three lines, each kept whole, at the size that fits its longest, "into
    TypeScript," (6.66 times the font size), in the words' column: never a fourth line, at any width. */
 .rh .ml-hero-words {
@@ -560,6 +566,16 @@
   line-height: 2.125rem;
 }
 
+/* The Migrate landing's rows, whose 1.08 and 1.6 line heights fell between pixels and left the icons in
+   their windows' bars a pixel low. */
+.rh .ml-row-text h2 {
+  line-height: 3rem;
+}
+
+.rh .ml-row-text p {
+  line-height: 1.875rem;
+}
+
 .rh .ml-seg button {
   line-height: 1.25rem;
 }
@@ -608,6 +624,11 @@
 @media (max-width: 639px) {
   .rh-links > a:not(:first-child) {
     display: none;
+  }
+
+  /* Reylo Migrate's wordmark is nearly twice as wide as Reylo's, so it is smaller there to leave room. */
+  .ml-wordmark svg[aria-label='Reylo Migrate'] {
+    height: 1.125rem;
   }
 
 }
