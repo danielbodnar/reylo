@@ -1502,6 +1502,70 @@ fn data_statements(sql: &str, d: Dialect) -> Vec<String> {
     statements.iter().enumerate().filter(|(k, s)| changes_data(s, d) && !copies_a_rebuild(&statements, *k)).map(|(_, s)| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())).collect()
 }
 
+/// Whether `reylo run` applies `sql` as deploy runs a migration: whole or not at all, and touching
+/// no rows deploy would keep. On Postgres a script runs as one transaction (a lone statement that
+/// can't run in one, as a migration's must be); elsewhere one statement does. And SQLite runs it with
+/// foreign keys on, where a migration runs with them off and checks them before it commits, so a
+/// table dropped there takes its children's rows with it: only what touches no rows through them,
+/// anything made, or an index, a view or a trigger dropped.
+fn runs_as_a_migration(sql: &str, d: Dialect) -> bool {
+    let statements = split_statements(sql, d);
+    let word = |s: &crate::sql::Statement, k: usize| s.tokens.get(k).map(crate::sql::Token::upper).unwrap_or_default();
+    match d {
+        Dialect::Postgres => !statements.iter().any(|s| word(s, 0) == "COMMIT"),
+        Dialect::Mysql => statements.len() == 1,
+        Dialect::Sqlite => statements.len() == 1 && statements.iter().all(|s| word(s, 0) == "CREATE" || (word(s, 0) == "DROP" && matches!(word(s, 1).as_str(), "INDEX" | "VIEW" | "TRIGGER"))),
+    }
+}
+
+/// The statements of a migration that write rows, as [`data_statements`] gives them, with the
+/// schema changes that fill what they make ([`fills`]). What they write turns on the rows and
+/// objects they read, so it can change with the order they run in, and no schema shows it was
+/// written.
+fn writes_rows(sql: &str, d: Dialect) -> Vec<String> {
+    let mut out = data_statements(sql, d);
+    out.extend(split_statements(sql, d).iter().filter(|s| fills(s, d)).map(|s| format!("{}…", s.text.split_whitespace().take(3).collect::<Vec<_>>().join(" ").to_lowercase())));
+    out
+}
+
+/// Whether a statement makes what a query fills, read from its words, never a string's or a
+/// comment's: a table made from a query (`create table … as select`, and MySQL's `create table …
+/// select` and `create table … (select …)`, the query outside any parentheses but its own), and a
+/// materialized view, made or refreshed. The parenthesis is MySQL's alone, where a query's words are
+/// reserved: SQLite takes `with` for a column's name.
+fn fills(statement: &crate::sql::Statement, d: Dialect) -> bool {
+    let words: Vec<String> = statement.tokens.iter().map(crate::sql::Token::upper).collect();
+    let word = |k: usize| words.get(k).map(String::as_str).unwrap_or_default();
+    let head: Vec<&str> = (0..6).map(word).collect();
+    if head[..3] == ["REFRESH", "MATERIALIZED", "VIEW"] {
+        return true;
+    }
+    if head[0] != "CREATE" {
+        return false;
+    }
+    if head.windows(2).any(|w| w == ["MATERIALIZED", "VIEW"]) {
+        return true;
+    }
+    let Some(table) = head.iter().position(|w| *w == "TABLE") else { return false };
+    let query = |w: &str| matches!(w, "SELECT" | "WITH" | "VALUES" | "TABLE");
+    // The first word in a parenthesis at the top, past any more of them: a column's name, or a
+    // query's first word, as MySQL takes `create table t (select …)` with no `as`.
+    let opens = |k: usize| (k + 1..words.len()).find(|&n| statement.tokens[n].text != "(").is_some_and(|n| query(word(n)));
+    let mut depth = 0usize;
+    for (k, t) in statement.tokens.iter().enumerate().skip(table + 1) {
+        match t.text.as_str() {
+            "(" if t.kind == crate::sql::TokenKind::Symbol && d == Dialect::Mysql && depth == 0 && opens(k) => return true,
+            "(" if t.kind == crate::sql::TokenKind::Symbol => depth += 1,
+            ")" if t.kind == crate::sql::TokenKind::Symbol => depth = depth.saturating_sub(1),
+            _ if depth > 0 => {}
+            _ if word(k) == "SELECT" => return true,
+            _ if word(k) == "AS" && opens(k) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Whether statement `k` of a file is a rebuild's own copy of a table's rows, which a database the
 /// change is already in needs no more: `insert into t (…) select … from s`, nothing after, where the
 /// file makes `t` before it and drops `s` after it (SQLite's copy into the table that takes the old
@@ -1864,17 +1928,36 @@ async fn late_problem(shadows: &mut Shadows<'_>, dir: &Path, ran: &[Migration], 
 
 /// The refusal of a database that applied its migrations in another order than the lock lists, `order`
 /// being the lock's (`run_order`). Every database runs the lock's order, and nothing else; with no
-/// lock, a late one is proven at deploy, so there is none.
-fn lock_order_problem(opts: &Options, applied: &[&HistoryRow], order: &[Migration]) -> Option<Problem> {
+/// lock, a late one is proven at deploy, so there is none. Where the lock, its chain intact, runs a
+/// migration this database hasn't run ahead of all it ran since (`history push` moved it there, as
+/// another database ran it, or a merge kept main's lines), a database development commands don't
+/// run on takes its change too and records both: `history push` records them only where they make
+/// what the lock's order makes. Where the one ahead writes rows, which no schema shows ran, that way
+/// isn't offered.
+fn lock_order_problem(opts: &Options, applied: &[&HistoryRow], order: &[Migration], d: Dialect) -> Option<Problem> {
     if lock_free(opts) {
         return None;
     }
     let k = applied.iter().zip(order).position(|(r, f)| r.name != f.name)?;
-    Some(
-        Problem::new("history-out-of-order", format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), order[k].name))
-            .note("Every database runs the migrations in the lock's order. Where one ran them otherwise, the lock was merged keeping a branch's lines: keep main's.")
-            .fix("On a development database, apply them in the lock's order", &["reylo migrate dev"]),
-    )
+    let problem = Problem::new("history-out-of-order", format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), order[k].name));
+    let (ahead, since) = (&order[k], &applied[k..]);
+    let moved = !applied.iter().any(|r| r.name == ahead.name) && since.len() < order.len() - k && since.iter().zip(&order[k + 1..]).all(|(r, f)| r.name == f.name);
+    if !moved || !writes_rows(&ahead.sql, d).is_empty() {
+        return Some(
+            problem
+                .note("Every database runs the migrations in the lock's order. Where one ran them otherwise, the lock was merged keeping a branch's lines: keep main's.")
+                .fix("On a development database, apply them in the lock's order", &["reylo migrate dev"]),
+        );
+    }
+    let ran = and_list(&since.iter().map(|r| r.name.clone()).collect::<Vec<_>>());
+    let problem = problem.note(format!("Every database runs the migrations in the lock's order, and this one ran {ran} without {}, which the lock runs first.", ahead.name)).fix("On a development database, apply them in the lock's order", &["reylo migrate dev"]);
+    let record = "reylo migrate history push --url <url>";
+    if runs_as_a_migration(&ahead.sql, d) {
+        let file = shell_word(&format!("{}/{}", shown(&opts.dir), ahead.name));
+        Some(problem.fix("On any other, make its change there too, then record both, running nothing", &[&format!("reylo run --url <url> --file {file}"), record]))
+    } else {
+        Some(problem.fix(format!("On any other, make its change there by hand, as {} makes it, then record both, running nothing", ahead.name), &[record]))
+    }
 }
 
 /// Where a migration falls in name order: init.sql, which holds the schema a project started
@@ -1934,7 +2017,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
     }
     let applied_files: Vec<Migration> = applied.iter().filter_map(|r| by_name(&r.name).cloned()).collect();
     if problems.is_empty() {
-        problems.extend(lock_order_problem(opts, &applied, &files));
+        problems.extend(lock_order_problem(opts, &applied, &files, d));
     }
     // Nothing is recorded without running but what a cut-off run of Reylo's own left (below).
     let records: Vec<Migration> = Vec::new();
@@ -2017,7 +2100,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
         // A lone statement cut off before its row was finished did run, or did not: the database says
         // which, and one that landed is recorded, as the row it started says it ran.
         let started: Vec<String> = history.iter().filter(|r| !r.applied).map(|r| r.name.clone()).collect();
-        let mut run = Run { live: &live, schema_sql: schema_sql.as_deref(), schema: shown(&opts.schema), applied_files: &applied_files, records, pending, started, landed: vec![], d };
+        let mut run = Run { live: &live, url: &opts.url, schema_sql: schema_sql.as_deref(), schema: shown(&opts.schema), applied_files: &applied_files, records, pending, started, landed: vec![], d };
         let result = check_in_shadows(&mut shadows, db, &mut run).await;
         shadows.finish().await;
         let problems = result?;
@@ -2028,6 +2111,8 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
 /// What a check holds the shadows against.
 struct Run<'a> {
     live: &'a [String],
+    /// The target's URL, which a refusal's commands name it by.
+    url: &'a str,
     schema_sql: Option<&'a str>,
     /// schema.sql's path, as a refusal names it.
     schema: String,
@@ -2140,6 +2225,18 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
             }
         }
     }
+    // A later migration that makes exactly this change, as history push moves it ahead of the rest.
+    let mut ahead = None;
+    if hint.is_empty() {
+        let ran: Vec<Migration> = run.applied_files.iter().chain(&run.records).cloned().collect();
+        if let Some(j) = behind(shadows, &ran, &run.pending, &live).await? {
+            let (it, rest) = (&run.pending[j], &run.pending[..j]);
+            if let Some(why) = unmovable(shadows, &ran, &run.pending, j, run.d).await? {
+                return Ok(vec![behind_problem(shadows, target, run.url, &ran, it, rest, &live, Some(why)).await]);
+            }
+            ahead = Some((it.name.clone(), names_of(rest)));
+        }
+    }
     let prefix = shadows.lane();
     shadows.push(prefix, run.applied_files.iter().chain(&run.records).map(Step::of));
     let mut sql = String::new();
@@ -2151,10 +2248,134 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
     problem = if sql.is_empty() { problem.lines(std::iter::once(String::new()).chain(changed_lines(&checkpoint, &live, run.d)).chain([String::new()])) } else { problem.sql(&sql) };
     if !hint.is_empty() {
         problem = problem.fix(format!("{} {} exactly this change: record it here, running nothing", hint.join(" and "), if hint.len() == 1 { "makes" } else { "make" }), &["reylo migrate history push"]);
+    } else if let Some((it, rest)) = ahead {
+        problem = problem.fix(format!("Migration {it} makes exactly this change: record it here, running nothing, and deploy runs {rest} after it"), &["reylo migrate history push"]);
     } else {
         problem = keep_fixes(problem, run.schema_sql.is_some().then_some(run.schema.as_str()), only_live.is_empty(), only_history.is_empty());
     }
     Ok(vec![problem])
+}
+
+/// Where the database has, on top of `ran`, exactly what a pending migration other than the next
+/// makes: a change made outside the migrations, written since as one that the lock runs after others
+/// this database hasn't run. It is recorded where the order can move to run it first, as this
+/// database did. The index in `pending` of the newest such, of the last three.
+#[cfg(feature = "cli")]
+async fn behind(shadows: &mut Shadows<'_>, ran: &[Migration], pending: &[Migration], live: &[String]) -> Result<Option<usize>, Error> {
+    for j in (1..pending.len()).rev().take(3) {
+        let lane = shadows.lane();
+        shadows.push(lane, ran.iter().chain([&pending[j]]).map(Step::of));
+        if let Ok(lines) = shadows.lines(lane).await? {
+            let made = crate::catalog::without_comments(&lines);
+            if crate::catalog::without_extra_children(live, &made) == made {
+                return Ok(Some(j));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Why `pending[j]`, which makes all this database has on top of `ran`, can't be recorded there,
+/// ahead of `pending[..j]`; None where it can. What writes rows ([`writes_rows`]) is never moved
+/// past, nor recorded by its schema alone: no schema shows that its statements ran, or that they run
+/// the same on the rows after the change. And the two orders must end at the same schema.
+#[cfg(feature = "cli")]
+async fn unmovable(shadows: &mut Shadows<'_>, ran: &[Migration], pending: &[Migration], j: usize, d: Dialect) -> Result<Option<String>, Error> {
+    let (it, ahead) = (&pending[j], &pending[..j]);
+    if !writes_rows(&it.sql, d).is_empty() {
+        return Ok(Some("Its data statements can't be told to have run here, so it isn't recorded without running.".into()));
+    }
+    let changing: Vec<Migration> = ahead.iter().filter(|m| !writes_rows(&m.sql, d).is_empty()).cloned().collect();
+    if !changing.is_empty() {
+        let one = changing.len() == 1;
+        return Ok(Some(format!("{} {} {} data, which can run differently after this change, so it can't move ahead of {}.", if one { "Migration" } else { "Migrations" }, names_of(&changing), if one { "changes" } else { "change" }, if one { "it" } else { "them" })));
+    }
+    let reordered: Vec<Migration> = ran.iter().chain([it]).chain(ahead).chain(&pending[j + 1..]).cloned().collect();
+    let original: Vec<Migration> = ran.iter().chain(pending).cloned().collect();
+    if !ends_alike(shadows, &original, &reordered).await? {
+        return Ok(Some(format!("Run ahead of {}, the migrations end differently, so it can't move there.", names_of(ahead))));
+    }
+    Ok(None)
+}
+
+/// Whether two orders of the migrations both replay, and end at the same schema.
+#[cfg(feature = "cli")]
+async fn ends_alike(shadows: &mut Shadows<'_>, a: &[Migration], b: &[Migration]) -> Result<bool, Error> {
+    let (x, y) = (shadows.lane(), shadows.lane());
+    shadows.push(x, a.iter().map(Step::of));
+    shadows.push(y, b.iter().map(Step::of));
+    Ok(match (shadows.lines(x).await?, shadows.lines(y).await?) {
+        (Ok(p), Ok(q)) => crate::catalog::same_schema(&p, &q),
+        _ => false,
+    })
+}
+
+/// The migrations' names, as a sentence lists them.
+#[cfg(feature = "cli")]
+fn names_of(migrations: &[Migration]) -> String {
+    and_list(&migrations.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
+}
+
+/// The refusal for [`behind`] where the order can't move: `it` makes the change, after `ahead`,
+/// which this database hasn't run, on top of `ran`, what its history says it ran, which is where
+/// deploy starts; `why` says why `it` can't run first. The way out keeps the order: the change
+/// undone, so that deploy runs `ahead`, then `it`, as every database does. The
+/// lead names the database at `url`, as every command shows one, with no credential or option, and
+/// both commands take its URL in `--url`, since a command without it reaches the project's own.
+/// The undo is a command only where `reylo run` applies it whole or not at all: on Postgres, which
+/// runs a script as one transaction, and a lone statement elsewhere. A SQLite rebuild needs the
+/// foreign keys off that a migration runs with.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "cli")]
+async fn behind_problem(shadows: &mut Shadows<'_>, target: &mut Db, url: &str, ran: &[Migration], it: &Migration, ahead: &[Migration], live: &[String], why: Option<String>) -> Problem {
+    let names = names_of(ahead);
+    let problem = Problem::new("later-migration-in-place", format!("Migration {} makes this change, but runs after {names}, which this database hasn't run", it.name));
+    let problem = match why {
+        Some(why) => problem.note(why),
+        None => problem,
+    };
+    let problem = match ran.last() {
+        Some(last) => problem.note(format!("It ran the migrations through {}, and then had this change made outside them:", last.name)),
+        None => problem.note("It ran none of the migrations, and then had this change made outside them:"),
+    };
+    let lane = shadows.lane();
+    shadows.push(lane, ran.iter().map(Step::of));
+    let made = match shadows.lines(lane).await {
+        Ok(Ok(lines)) => crate::catalog::without_comments(&lines),
+        _ => vec![],
+    };
+    let (mut change, mut sql) = (None, None);
+    if let Ok(Ok(())) = shadows.open(lane).await {
+        shadows.taint(lane);
+        change = scoped_change(target, shadows.db(lane), &[]).await;
+        if change.is_none() {
+            sql = plan_text(shadows.db(lane), target, None).await;
+        }
+    }
+    let (sql, undo, lost) = match change {
+        Some((sql, undo, lost)) => (Some(sql), Some(undo), lost),
+        None => (sql, None, vec![]),
+    };
+    let problem = match sql {
+        Some(sql) => problem.sql(&sql),
+        None => problem.lines(std::iter::once(String::new()).chain(changed_lines(&made, live, target.dialect())).chain([String::new()])),
+    };
+    let problem = if lost.is_empty() { problem } else { problem.note(format!("Undoing it loses what {} {}.", and_list(&lost), if lost.len() == 1 { "holds" } else { "hold" })) };
+    // What `it` writes may have been written here too, with the change: the undo can't take it back,
+    // and deploy writes it again.
+    let writes = writes_rows(&it.sql, target.dialect());
+    let problem = if writes.is_empty() { problem } else { problem.note(format!("The undo reverses the schema alone: where {} also ran here, reverse what {} wrote first, or deploy writes it again.", and_list(&writes), if writes.len() == 1 { "it" } else { "they" })) };
+    let order = format!("{names} first, and then {}", it.name);
+    let on = shown_url(url);
+    let deploy = "reylo migrate deploy --url <url>";
+    let d = target.dialect();
+    match undo {
+        Some(undo) if runs_as_a_migration(&undo.join("\n"), d) => problem.note("Give both commands the same URL as this one.").fix(format!("Undo it on {on}, so that deploy runs {order}"), &[format!("reylo run --url <url> {}", shell_word(&undo.join(" "))).as_str(), deploy]),
+        // An undo reylo run wouldn't run as a migration does is no script to hand over either: on
+        // SQLite a rebuild copied as written has none of a migration's safeguards (its transaction,
+        // foreign keys off and checked before it commits). The change it reverses is shown above.
+        _ => problem.note(format!("Undo it on {on} by hand, then give deploy the same URL as this command.")).fix(format!("Then deploy, which runs {order}"), &[deploy]),
+    }
 }
 
 /// The ways to keep a change made by hand on a database no development command runs on: written as
@@ -2324,7 +2545,6 @@ fn as_user(url: &str, user: &str) -> String {
     let base = format!("{scheme}://{user}@{host}{}", &rest[end..]);
     if kept.is_empty() { base } else { format!("{base}?{}", kept.join("&")) }
 }
-
 #[cfg(feature = "cli")]
 async fn with_shadows(mut db: Db, opts: &Options) -> Result<(Db, Server, usize), Error> {
     let mut server = shadow_server(&mut db, opts).await?;
@@ -2973,8 +3193,12 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
         shadows.finish().await;
         return Ok(refuse(&agreement, log));
     }
+    // The run the database's history says it ran, where that is how the order starts.
+    let applied: Vec<&HistoryRow> = before_rows.iter().filter(|r| r.applied).collect();
+    let history_run = (!applied.is_empty() && applied.len() <= order.len() && applied.iter().zip(&order).all(|(r, f)| r.name == f.name && same_statements(&r.sql, &f.sql, d))).then_some(applied.len());
     // The replay after each migration, from none: the longest run that equals the database, and
-    // else the one closest to it.
+    // else the one closest to it: the history's run where it is as close as any, since a migration
+    // that changes no schema leaves the run before it just as close.
     let replayed = async {
         let lane = shadows.lane();
         if let Err((_, e)) = shadows.open(lane).await? {
@@ -2983,12 +3207,16 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
         shadows.taint(lane);
         let mut matches: Vec<usize> = Vec::new();
         let mut closest: (usize, usize, Vec<String>) = (usize::MAX, 0, vec![]);
+        let mut at_history: Option<(usize, Vec<String>)> = None;
         for k in 0..=order.len() {
             let now = crate::catalog::without_comments(&catalog(shadows.db(lane)).await?);
             if crate::catalog::without_extra_children(&live, &now) == now {
                 matches.push(k);
             } else {
                 let (a, b) = difference(&now, &live);
+                if Some(k) == history_run {
+                    at_history = Some((a.len() + b.len(), now.clone()));
+                }
                 if a.len() + b.len() < closest.0 {
                     closest = (a.len() + b.len(), k, now);
                 }
@@ -2998,6 +3226,11 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
             }
             if let Err(e) = run(shadows.db(lane), &order[k], false).await {
                 return Ok(Err(format!("{} fails when replayed in a shadow database: {e}", order[k].name)));
+            }
+        }
+        if let (Some(k), Some((distance, lines))) = (history_run, at_history) {
+            if distance == closest.0 {
+                closest = (distance, k, lines);
             }
         }
         Ok::<_, Error>(Ok((matches, closest)))
@@ -3014,7 +3247,52 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
             return Err(e);
         }
     };
-    let Some(mut n) = matches.last().copied() else {
+    // A migration at the end of the run that changes data and nothing a schema shows can't be told
+    // to have run: it stays pending, to run.
+    // One the history says ran, as written, stays recorded.
+    let ran = |m: &Migration| before_rows.iter().any(|r| r.applied && r.name == m.name && same_statements(&r.sql, &m.sql, d));
+    let matched = matches.last().copied().map(|mut n| {
+        while n > 0 && !data_statements(&order[n - 1].sql, d).is_empty() && matches.contains(&(n - 1)) && !ran(&order[n - 1]) {
+            n -= 1;
+        }
+        n
+    });
+    // A later migration that makes all this database has since the run its history ends at, which is
+    // where deploy starts, ran here before those ahead of it: it is recorded, and the order made the
+    // one this database ran, with it right after that run and the rest after it ([`unmovable`] says
+    // where it can't be). It is looked for too where a run that changes data also matches, which
+    // can't be recorded by its schema alone. Where it can't move, the change is undone instead, for
+    // deploy to run the migrations in their order.
+    let unproven = |n: usize| history_run.is_some_and(|h| order[h.min(n)..n].iter().any(|m| !data_statements(&m.sql, d).is_empty()));
+    let mut moved: Option<(Vec<Migration>, usize, String, String)> = None;
+    if let Some(h) = history_run.filter(|&h| !init && h < order.len() && matched.is_none_or(unproven)) {
+        let found = match behind(&mut shadows, &order[..h], &order[h..], &live).await {
+            Ok(Some(j)) => unmovable(&mut shadows, &order[..h], &order[h..], j, d).await.map(|why| Some((j, why))),
+            other => other.map(|_| None),
+        };
+        match found {
+            Ok(None) => {}
+            Ok(Some((j, None))) => {
+                let (it, ahead) = (&order[h + j], &order[h..h + j]);
+                let reordered: Vec<Migration> = order[..h].iter().chain([it]).chain(ahead).chain(&order[h + j + 1..]).cloned().collect();
+                moved = Some((reordered, h + 1, it.name.clone(), names_of(ahead)));
+            }
+            Ok(Some((j, Some(why)))) => {
+                let problem = behind_problem(&mut shadows, db, &opts.url, &order[..h], &order[h + j], &order[h..h + j], &live, Some(why)).await;
+                shadows.finish().await;
+                return Ok(refuse(&[problem], log));
+            }
+            Err(e) => {
+                shadows.finish().await;
+                return Err(e);
+            }
+        }
+    }
+    let (order, matched, moved) = match moved {
+        Some((reordered, n, it, ahead)) => (reordered, Some(n), Some((it, ahead))),
+        None => (order, matched, None),
+    };
+    let Some(n) = matched else {
         // The closest run, and the change from what it makes to this database, as SQL.
         let (_, k, lines) = closest;
         let lane = shadows.lane();
@@ -3044,12 +3322,18 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
         return Ok(refuse(&[problem], log));
     };
     shadows.finish().await;
-    // A migration at the end of the run that changes data and nothing a schema shows can't be told
-    // to have run: it stays pending, to run.
-    // One the history says ran, as written, stays recorded.
-    let ran = |m: &Migration| before_rows.iter().any(|r| r.applied && r.name == m.name && same_statements(&r.sql, &m.sql, d));
-    while n > 0 && !data_statements(&order[n - 1].sql, d).is_empty() && matches.contains(&(n - 1)) && !ran(&order[n - 1]) {
-        n -= 1;
+    // The lock takes the order first: a history written after it can be written again, where one
+    // written before a lock that never came would be out of its order.
+    let relocked = moved.is_some() && !lock_free(opts);
+    if relocked {
+        let texts: Vec<(String, String)> = order.iter().map(|f| (f.name.clone(), normalized(&f.sql))).collect();
+        let entries = lock::chain(texts.iter().map(|(n, t)| (n.as_str(), t.as_str())));
+        // The order moved ends as the one schema.sql was shown to match, above.
+        let schema = match schema_sql.as_deref() {
+            Some(sql) => Some(lock::schema_sum(&entries.last().map(|e| e.sum.clone()).unwrap_or_default(), sql)),
+            None => l.schema.clone(),
+        };
+        lock::write(&opts.lock, &lock::Lock { schema, entries })?;
     }
     let recorded = &order[..n];
     let before = before_rows;
@@ -3099,12 +3383,20 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
         rows.row(log, &paint("red", "-"), &r.name, "taken out of the history");
     }
     let count = |n: usize| format!("{n} migration{}", if n == 1 { "" } else { "s" });
-    if added.is_empty() && taken.is_empty() {
+    if added.is_empty() && taken.is_empty() && kept < recorded.len() {
+        log(&format!("{} The history now lists {}, in the order they run", paint("green", "✓"), count(recorded.len())));
+    } else if added.is_empty() && taken.is_empty() {
         log(&format!("{} The history already matches this database: {}", paint("green", "✓"), count(recorded.len())));
     } else if added.is_empty() {
         log(&format!("{} The history now lists {}", paint("green", "✓"), count(recorded.len())));
     } else {
         log(&format!("{} Recorded {}, running nothing", paint("green", "✓"), count(added.len())));
+    }
+    // A development database that ran them in the old order has what the new one makes: its history
+    // takes the new order with no rewind, which would drop what they made, rows included.
+    if let (Some((it, ahead)), true) = (&moved, relocked) {
+        log(&format!("{} Wrote {}: {it} now runs before {ahead}, as it did here", paint("green", "✓"), shown(&opts.lock)));
+        log(&then(note(format!("Development databases ran {ahead} first")), &[("To record the lock's new order on one, running nothing", &["reylo migrate history push"])]));
     }
     let pending = &order[n..];
     if !pending.is_empty() {
@@ -3347,7 +3639,7 @@ async fn status_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
         None
     } else {
         let applied: Vec<&HistoryRow> = history.iter().filter(|r| r.applied).collect();
-        lock_order_problem(opts, &applied, &order)
+        lock_order_problem(opts, &applied, &order, d)
     };
     // Deploy refuses such a database, so running what it hasn't run is offered only where it doesn't.
     let offer_run = misordered.is_none();
@@ -6340,7 +6632,7 @@ async fn unexplained(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, kep
     if let Ok(Ok(())) = shadows.open(ran).await {
         shadows.taint(ran);
         match scoped_change(db, shadows.db(ran), &explaining).await {
-            Some((sql, statements)) => {
+            Some((sql, statements, _)) => {
                 problem = problem.sql(&sql);
                 undo = Some(statements);
             }
@@ -6376,9 +6668,10 @@ async fn unexplained(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, kep
 /// statements that undo it alone. An object that differs from the history is refused unless one of
 /// `explaining` (schema.sql, the pending migrations) has it as the database does, it is a comment,
 /// or it is a partition, which is data; what is refused comes back from the history, and everything
-/// else stays as it is on the database. None where nothing would change.
+/// else stays as it is on the database. Last, what the undo loses: each table or column it drops or
+/// narrows, by name. None where nothing would change.
 #[cfg(feature = "cli")]
-async fn scoped_change(db: &mut Db, history: &mut Db, explaining: &[crate::diff::Schema]) -> Option<(String, Vec<String>)> {
+async fn scoped_change(db: &mut Db, history: &mut Db, explaining: &[crate::diff::Schema]) -> Option<(String, Vec<String>, Vec<String>)> {
     let mut current = crate::diff::read(db).await.ok()?;
     current.live = true;
     let mut target = crate::diff::read(history).await.ok()?;
@@ -6419,7 +6712,8 @@ async fn scoped_change(db: &mut Db, history: &mut Db, explaining: &[crate::diff:
     let mut change = crate::diff::plan(&target, &current, alterer.as_ref());
     style(db, &mut change, &current).await.ok()?;
     let statements: Vec<String> = undo.runnable().map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
-    (!statements.is_empty() && !change.statements.is_empty()).then(|| (change.sql(), statements))
+    let lost: Vec<String> = undo.losses.iter().chain(undo.narrowings.iter().map(|(column, _)| column)).map(|l| l.trim_start_matches("column ").trim_start_matches("table ").to_string()).collect();
+    (!statements.is_empty() && !change.statements.is_empty()).then(|| (change.sql(), statements, lost))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7063,6 +7357,61 @@ fn table_lines(table: &crate::db::Table) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_printed_run_is_offered_only_where_it_runs_as_a_migration() {
+        for (sql, d) in [
+            ("create index a_id on a (id);", Dialect::Sqlite),
+            ("drop index a_id;", Dialect::Sqlite),
+            ("create table b (id integer);", Dialect::Sqlite),
+            ("drop index a_id on a;", Dialect::Mysql),
+            ("drop index a_id; drop table b;", Dialect::Postgres),
+            ("create index concurrently a_id on a (id);", Dialect::Postgres),
+        ] {
+            assert!(runs_as_a_migration(sql, d), "{sql}");
+        }
+        for (sql, d) in [
+            // With foreign keys on, as reylo run has them, a parent's rows take its children's.
+            ("drop table parent;", Dialect::Sqlite),
+            ("alter table a drop column b;", Dialect::Sqlite),
+            ("drop index a_id; drop index b_id;", Dialect::Sqlite),
+            ("drop index a_id on a; drop table b;", Dialect::Mysql),
+            ("alter type mood add value 'x'; commit; begin; update t set m = 'x';", Dialect::Postgres),
+        ] {
+            assert!(!runs_as_a_migration(sql, d), "{sql}");
+        }
+    }
+
+    #[cfg(feature = "cli")]
+    #[test]
+    fn a_table_made_from_a_query_is_told_by_its_words() {
+        let fills_all = |sql: &str, d: Dialect| split_statements(sql, d).iter().any(|s| fills(s, d));
+        for (sql, d) in [
+            ("create table snap as select id from a", Dialect::Postgres),
+            ("CREATE TEMP TABLE IF NOT EXISTS snap AS (WITH x AS (SELECT 1) SELECT * FROM x)", Dialect::Postgres),
+            ("create table snap as table a", Dialect::Postgres),
+            ("create table snap (id bigint) engine=InnoDB select id from a", Dialect::Mysql),
+            ("create table snap (select id from a)", Dialect::Mysql),
+            ("create table snap (id bigint) ((select id from a))", Dialect::Mysql),
+            ("create materialized view totals as select count(*) from a", Dialect::Postgres),
+            ("refresh materialized view totals", Dialect::Postgres),
+        ] {
+            assert!(fills_all(sql, d), "{sql}");
+        }
+        for (sql, d) in [
+            ("create table notes (id int, body text default 'select')", Dialect::Sqlite),
+            ("create table notes (with integer)", Dialect::Sqlite),
+            ("create table notes (values text, table text)", Dialect::Sqlite),
+            ("create table notes (id int) -- as select\n", Dialect::Postgres),
+            ("create table t (a int, b int generated always as (a + 1) stored)", Dialect::Postgres),
+            ("create table p partition of parent for values in (1)", Dialect::Postgres),
+            ("create table t (id int) with (fillfactor = 70)", Dialect::Postgres),
+            (r#"create table t ("select" int)"#, Dialect::Postgres),
+            ("create view v as select id from a", Dialect::Postgres),
+        ] {
+            assert!(!fills_all(sql, d), "{sql}");
+        }
+    }
 
     #[test]
     #[cfg(feature = "cli")]

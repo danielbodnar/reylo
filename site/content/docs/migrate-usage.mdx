@@ -94,6 +94,18 @@ $ reylo migrate dev
 $ reylo migrate history push --url $PROD_URL
 ```
 
+Where production hasn't run every migration ahead of yours, `reylo migrate history push` moves yours ahead of them in the lock. Record the new order in development too, then deploy the rest:
+
+```terminal
+# record the lock's new order on your development database, running nothing
+$ reylo migrate history push
+
+# run the migrations production hasn't run
+$ reylo migrate deploy --url $PROD_URL
+```
+
+It moves yours past no migration that changes data. Past one, it refuses and says to undo your change on production, then deploy. It prints the undo where it can run it safely. A server that ran them before yours, such as staging, takes your change too. Its deploy refusal gives the commands.
+
 ## Schema <code className="dk-aside">schema.sql</code> [#schema-schemasql]
 
 Declare your schema in plain SQL, as you would on the database. Reylo Migrate compares and migrates:

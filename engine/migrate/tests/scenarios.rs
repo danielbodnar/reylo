@@ -463,6 +463,12 @@ for_each_dialect!(
     history_pull_writes_the_lock_and_keeps_what_is_still_to_deploy,
     db_introspect_prints_the_schema,
     a_hotfix_by_hand_is_recorded_once_it_is_a_migration,
+    a_hotfix_behind_a_pending_migration_moves_ahead_of_it,
+    a_hotfix_that_cannot_move_ahead_is_undone_then_deployed,
+    a_server_that_ran_what_a_hotfix_moved_ahead_of_takes_its_change,
+    history_push_takes_a_database_to_a_reordered_lock_keeping_its_rows,
+    a_hotfix_whose_migration_changes_data_is_undone_then_deployed,
+    a_hotfix_moves_past_no_table_made_from_a_query_and_is_none,
     history_push_follows_a_renamed_migration,
     a_failed_migration_leaves_nothing,
     files_that_cannot_run_atomically_are_refused,
@@ -1222,7 +1228,7 @@ async fn status_reports_a_history_out_of_the_locks_order(mut p: P) {
     p.file(tags, &format!("alter table a add column tags {int};"));
     p.lock(&[a, tags, status]);
     p.output();
-    let refusal = r"✗ This database applied 20261027120000_status\.sql where \S*reylo\.lock lists 20261027110000_tags\.sql\n  Every database runs the migrations in the lock's order\.";
+    let refusal = r"✗ This database applied 20261027120000_status\.sql where \S*reylo\.lock lists 20261027110000_tags\.sql\n  Every database runs the migrations in the lock's order, and this one ran 20261027120000_status\.sql without 20261027110000_tags\.sql, which the lock runs first\.";
     assert_eq!(p.migrate().await, 1);
     assert_has!(p.output(), refusal);
     // Status says the same, and doesn't offer the deploy that refuses.
@@ -1314,6 +1320,268 @@ async fn a_hotfix_by_hand_is_recorded_once_it_is_a_migration(mut p: P) {
     assert_has!(p.output(), r"\+ 20261027110000_hotfix\.sql +recorded");
     assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_hotfix.sql"]);
     assert_eq!(p.rows("select * from users").await.len(), 1);
+}
+
+async fn a_hotfix_behind_a_pending_migration_moves_ahead_of_it(mut p: P) {
+    let (int, text) = (p.t.int, p.t.text);
+    p.linear();
+    let table = format!("create table users (id {int}, email {text}, nick {text});");
+    let (users, backfill, nick, email) = ("20261027100000_users.sql", "20261027110000_backfill.sql", "20261027120000_nick_index.sql", "20261027130000_email_index.sql");
+    p.schema(&table);
+    p.file(users, &table);
+    p.file(backfill, "update users set nick = email where nick is null;");
+    p.lock(&[users, backfill]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into users values (1, 'a@b.co', null)").await;
+    p.exec("create index users_email on users (email)").await;
+    p.output();
+    // The run named is the one this database ran, which the data migration ends: as close as the
+    // run before it, which leaves the same schema.
+    assert_eq!(p.history_push().await, 1);
+    assert_has!(p.output(), r"✗ No run of the migrations makes this database's schema\n  The closest is after 20261027110000_backfill\.sql, which differs by:\n\n    [^\n]*users_email");
+    // Development moves on, and the change made by hand is written into schema.sql and its migration,
+    // which the lock runs after the one this database hasn't run.
+    p.file(nick, "create index users_nick on users (nick);");
+    p.schema(&format!("{table} create index users_nick on users (nick); create index users_email on users (email);"));
+    p.file(email, "create index users_email on users (email);");
+    p.lock(&[users, backfill, nick, email]);
+    assert_eq!(p.dry_run().await, 1);
+    assert_has!(p.output(), r"✗ This database was changed outside its migrations\n\n(?:    [^\n]*\n)*    [^\n]*users_email[^\n]*\n(?:    [^\n]*\n)*\n  Migration 20261027130000_email_index\.sql makes exactly this change: record it here, running nothing, and deploy runs 20261027120000_nick_index\.sql after it:\n    reylo migrate history push");
+    // Recorded where this database ran it, ahead of the one it hasn't run, which the lock now runs
+    // after it. Nothing is undone, and deploy runs the rest.
+    assert_eq!(p.history_push().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"\+ 20261027130000_email_index\.sql +recorded: already in place\n✓ Recorded 1 migration, running nothing\n✓ Wrote \S*reylo\.lock: 20261027130000_email_index\.sql now runs before 20261027120000_nick_index\.sql, as it did here\n» Development databases ran 20261027120000_nick_index\.sql first\n  To record the lock's new order on one, running nothing:\n    reylo migrate history push\n» This database hasn't run 20261027120000_nick_index\.sql\n  To run it:\n    reylo migrate deploy");
+    assert_eq!(p.locked(), [users, backfill, email, nick]);
+    assert_eq!(p.history().await, [users, backfill, email]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [users, backfill, email, nick]);
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    // A migration that changes data, ahead of the one that makes a change by hand, is never recorded
+    // by the schema the two leave, which the later one makes alone, nor moved past, since its
+    // statements can run differently on the rows after the change: the change is undone, and it runs.
+    let (refill, both) = ("20261027140000_refill.sql", "20261027150000_both_index.sql");
+    p.file(refill, "update users set nick = 'x' where nick is null;");
+    p.exec("create index users_both on users (email, nick)").await;
+    p.schema(&format!("{table} create index users_nick on users (nick); create index users_email on users (email); create index users_both on users (email, nick);"));
+    p.file(both, "create index users_both on users (email, nick);");
+    p.lock(&[users, backfill, email, nick, refill, both]);
+    p.output();
+    let refused = r"✗ Migration 20261027150000_both_index\.sql makes this change, but runs after 20261027140000_refill\.sql, which this database hasn't run\n  Migration 20261027140000_refill\.sql changes data, which can run differently after this change, so it can't move ahead of it\.\n  It ran the migrations through 20261027120000_nick_index\.sql,";
+    assert_eq!(p.history_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, refused);
+    assert_eq!(p.dry_run().await, 1);
+    assert_has!(p.output(), refused);
+    assert_eq!(p.locked(), [users, backfill, email, nick, refill, both]);
+    assert_eq!(p.history().await, [users, backfill, email, nick]);
+    p.exec(&undo_on(&out)).await;
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [users, backfill, email, nick, refill, both]);
+    let rows = p.rows("select nick from users").await;
+    assert_eq!(rows.iter().map(|r| r.text("nick").to_string()).collect::<Vec<_>>(), ["x"]);
+}
+
+async fn history_push_takes_a_database_to_a_reordered_lock_keeping_its_rows(mut p: P) {
+    let int = p.t.int;
+    p.linear();
+    let (a, notes, index) = ("20261027100000_a.sql", "20261027110000_notes.sql", "20261027120000_a_index.sql");
+    p.schema(&format!("create table a (id {int}); create table notes (id {int}); create index a_id on a (id);"));
+    p.file(a, &format!("create table a (id {int});"));
+    p.file(notes, &format!("create table notes (id {int});"));
+    p.file(index, "create index a_id on a (id);");
+    p.lock(&[a, notes, index]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into notes values (1)").await;
+    // Another database moved the index ahead, as it ran it: this one, which ran the old order, has
+    // what the new one makes, and takes its order with nothing run or rewound.
+    p.lock(&[a, index, notes]);
+    p.output();
+    assert_eq!(p.history_push().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"✓ The history now lists 3 migrations, in the order they run");
+    assert_eq!(p.history().await, [a, index, notes]);
+    assert_eq!(p.rows("select * from notes").await.len(), 1);
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+}
+
+async fn a_hotfix_whose_migration_changes_data_is_undone_then_deployed(mut p: P) {
+    // On MySQL each migration holds one change, so no migration both indexes and updates.
+    if p.d == Dialect::Mysql {
+        return;
+    }
+    let (int, text) = (p.t.int, p.t.text);
+    p.linear();
+    let table = format!("create table users (id {int}, email {text}, nick {text});");
+    let (users, nick, email) = ("20261027100000_users.sql", "20261027110000_nick_index.sql", "20261027120000_email_index.sql");
+    p.schema(&format!("{table} create index users_nick on users (nick); create index users_email on users (email);"));
+    p.file(users, &table);
+    p.lock(&[users]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into users values (1, 'a@b.co', null)").await;
+    p.exec("create index users_email on users (email)").await;
+    // The migration that makes the index made by hand also fills a column, which no schema shows ran.
+    p.file(nick, "create index users_nick on users (nick);");
+    p.file(email, "create index users_email on users (email); update users set nick = 'y' where nick is null;");
+    p.lock(&[users, nick, email]);
+    p.output();
+    let refused = r"✗ Migration 20261027120000_email_index\.sql makes this change, but runs after 20261027110000_nick_index\.sql, which this database hasn't run\n  Its data statements can't be told to have run here, so it isn't recorded without running\.";
+    assert_eq!(p.history_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, refused);
+    // The undo takes back the index alone: what the update wrote, where it ran here too, is the
+    // operator's to take back, or deploy writes it again.
+    assert_has!(&out, r"  The undo reverses the schema alone: where update users set… also ran here, reverse what it wrote first, or deploy writes it again\.\n  Give both commands");
+    assert_eq!(p.dry_run().await, 1);
+    assert_has!(p.output(), refused);
+    p.exec(&undo_on(&out)).await;
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [users, nick, email]);
+    let rows = p.rows("select nick from users").await;
+    assert_eq!(rows.iter().map(|r| r.text("nick").to_string()).collect::<Vec<_>>(), ["y"]);
+}
+
+async fn a_hotfix_moves_past_no_table_made_from_a_query_and_is_none(mut p: P) {
+    let int = p.t.int;
+    p.linear();
+    let (a, snap, index) = ("20261027100000_a.sql", "20261027110000_snap.sql", "20261027120000_a_index.sql");
+    p.file(a, &format!("create table a (id {int});"));
+    p.schema(&format!("create table a (id {int}); create table snap as select id from a; create index a_id on a (id);"));
+    p.lock(&[a]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into a values (1), (2)").await;
+    // A table made from a query holds what it read when it ran: it is never moved behind a change,
+    // nor recorded by its schema alone.
+    p.exec("create index a_id on a (id)").await;
+    p.file(snap, "create table snap as select id from a;");
+    p.file(index, "create index a_id on a (id);");
+    p.lock(&[a, snap, index]);
+    p.output();
+    assert_eq!(p.history_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, r"✗ Migration 20261027120000_a_index\.sql makes this change, but runs after 20261027110000_snap\.sql, which this database hasn't run\n  Migration 20261027110000_snap\.sql changes data, which can run differently after this change, so it can't move ahead of it\.");
+    p.exec(&undo_on(&out)).await;
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [a, snap, index]);
+    assert_eq!(p.rows("select * from snap").await.len(), 2);
+    // And one made by hand, empty, is not the table the migration fills.
+    let (b, copy) = ("20261027130000_b.sql", "20261027140000_copy.sql");
+    // As each database types a column a query makes: SQLite by its affinity alone.
+    let made = if p.d == Dialect::Sqlite { "INT" } else { int };
+    p.exec(&format!("create table copy (id {made})")).await;
+    p.file(b, &format!("create table b (id {int});"));
+    // MySQL's way to write one with no `as`, a query in the parentheses.
+    let fill = if p.d == Dialect::Mysql { "create table copy (select id from a);" } else { "create table copy as select id from a;" };
+    p.file(copy, fill);
+    p.schema(&format!("create table a (id {int}); create table snap as select id from a; create index a_id on a (id); create table b (id {int}); {fill}"));
+    p.lock(&[a, snap, index, b, copy]);
+    p.output();
+    assert_eq!(p.history_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, r"✗ Migration 20261027140000_copy\.sql makes this change, but runs after 20261027130000_b\.sql, which this database hasn't run\n  Its data statements can't be told to have run here, so it isn't recorded without running\.");
+    assert_has!(&out, r"The undo reverses the schema alone: where create table copy… also ran here");
+    // SQLite's undo drops a table, which reylo run, with foreign keys on, would do otherwise than a
+    // migration: it is left to do by hand.
+    if p.d == Dialect::Sqlite {
+        assert_has!(&out, r"  Undo it on \S+ by hand, then give deploy the same URL as this command\.\n\n  Then deploy, which runs 20261027130000_b\.sql first, and then 20261027140000_copy\.sql:\n    reylo migrate deploy --url <url>");
+        p.exec("drop table copy").await;
+    } else {
+        p.exec(&undo_on(&out)).await;
+    }
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.rows("select * from copy").await.len(), 2);
+    // A query's word in a string, or a column's name (SQLite's `with`), makes no table from a query:
+    // the table made by hand is recorded ahead of the one this database hasn't run, its row kept.
+    let (c, notes) = ("20261027150000_c.sql", "20261027160000_notes.sql");
+    let text = p.t.text;
+    let id = if p.d == Dialect::Sqlite { "with" } else { "id" };
+    let table = format!("create table notes ({id} {int}, body {text} default 'select')");
+    p.exec(&table).await;
+    p.exec(&format!("insert into notes ({id}) values (1)")).await;
+    p.file(c, &format!("create table c (id {int});"));
+    p.file(notes, &format!("{table};"));
+    p.schema(&format!("create table a (id {int}); create table snap as select id from a; create index a_id on a (id); create table b (id {int}); {fill} create table c (id {int}); {table};"));
+    p.lock(&[a, snap, index, b, copy, c, notes]);
+    p.output();
+    assert_eq!(p.history_push().await, 0, "{}", p.peek());
+    assert_eq!(p.locked(), [a, snap, index, b, copy, notes, c]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [a, snap, index, b, copy, notes, c]);
+    assert_eq!(p.rows("select * from notes").await.len(), 1);
+}
+
+async fn a_server_that_ran_what_a_hotfix_moved_ahead_of_takes_its_change(mut p: P) {
+    let (int, text) = (p.t.int, p.t.text);
+    p.linear();
+    let table = format!("create table users (id {int}, email {text}, nick {text});");
+    let (users, nick, email) = ("20261027100000_users.sql", "20261027120000_nick_index.sql", "20261027130000_email_index.sql");
+    p.schema(&format!("{table} create index users_nick on users (nick); create index users_email on users (email);"));
+    p.file(users, &table);
+    p.file(nick, "create index users_nick on users (nick);");
+    p.lock(&[users, nick]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into users values (1, 'a@b.co', null)").await;
+    // Production's history push moved the hotfix's migration ahead of the one this server already ran.
+    p.file(email, "create index users_email on users (email);");
+    p.lock(&[users, email, nick]);
+    p.output();
+    let refused = r"✗ This database applied 20261027120000_nick_index\.sql where \S*reylo\.lock lists 20261027130000_email_index\.sql\n  Every database runs the migrations in the lock's order, and this one ran 20261027120000_nick_index\.sql without 20261027130000_email_index\.sql, which the lock runs first\.\n\n  On a development database, apply them in the lock's order:\n    reylo migrate dev\n  On any other, make its change there too, then record both, running nothing:\n    reylo run --url <url> --file \S+20261027130000_email_index\.sql\n    reylo migrate history push --url <url>";
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), refused);
+    assert_eq!(p.status().await, 1);
+    assert_has!(p.output(), refused);
+    // Its change made here too, as the command runs the file, both are recorded in the lock's order.
+    p.exec("create index users_email on users (email);").await;
+    assert_eq!(p.history_push().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [users, email, nick]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "Up to date");
+    assert_eq!(p.rows("select * from users").await.len(), 1);
+}
+
+async fn a_hotfix_that_cannot_move_ahead_is_undone_then_deployed(mut p: P) {
+    let int = p.t.int;
+    p.linear();
+    let (a, t, wider) = ("20261027100000_a.sql", "20261027110000_t.sql", "20261027120000_wider.sql");
+    p.schema(&format!("create table a (id {int}); create table t (id {int});"));
+    p.file(a, &format!("create table a (id {int});"));
+    p.lock(&[a]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec(&format!("create table t (id {int}, x {int})")).await;
+    // The migration that makes the change by hand does nothing after the one ahead of it, which fails
+    // after it: the order can't move, and the change is undone, for deploy to run both.
+    p.file(t, &format!("create table t (id {int});"));
+    p.file(wider, &format!("create table if not exists t (id {int}, x {int});"));
+    p.lock(&[a, t, wider]);
+    p.output();
+    let title = r"✗ Migration 20261027120000_wider\.sql makes this change, but runs after 20261027110000_t\.sql, which this database hasn't run\n  Run ahead of 20261027110000_t\.sql, the migrations end differently, so it can't move there\.\n  It ran the migrations through 20261027100000_a\.sql, and then had this change made outside them:";
+    assert_eq!(p.history_push().await, 1);
+    let out = p.output();
+    assert_has!(&out, title);
+    if p.d == Dialect::Sqlite {
+        assert_has!(&out, r"  Undoing it loses what \S*t holds\.\n  Undo it on \S+ by hand, then give deploy the same URL as this command\.\n\n  Then deploy, which runs 20261027110000_t\.sql first, and then 20261027120000_wider\.sql:\n    reylo migrate deploy --url <url>\n\nNothing was changed\.");
+    } else {
+        assert_has!(&out, r"  Undoing it loses what \S*t holds\.\n  Give both commands the same URL as this one\.\n\n  Undo it on \S+, so that deploy runs 20261027110000_t\.sql first, and then 20261027120000_wider\.sql:\n    reylo run --url <url> '[^\n]*'\n    reylo migrate deploy --url <url>\n\nNothing was changed\.");
+    }
+    // The lead names this database, which a command without --url may not reach, as every command
+    // shows one: with no credential or option, which a log keeps.
+    assert!(out.contains(&format!("Undo it on {} ", reylo_migrate::db::shown_url(&p.url))) || out.contains(&format!("Undo it on {},", reylo_migrate::db::shown_url(&p.url))), "{out}");
+    assert_eq!(p.locked(), [a, t, wider]);
+    assert_eq!(p.history().await, [a]);
+    assert_eq!(p.dry_run().await, 1);
+    assert_has!(p.output(), title);
+    if p.d == Dialect::Sqlite {
+        p.exec("drop table t").await;
+    } else {
+        p.exec(&undo_on(&out)).await;
+    }
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await, [a, t, wider]);
+}
+
+/// The SQL of the `reylo run --url <url>` a refusal gives to undo a change on the database it names.
+fn undo_on(out: &str) -> String {
+    let quoted = regex::Regex::new(r"reylo run --url <url> '((?:[^']|'\\'')*)'").unwrap().captures(out).unwrap_or_else(|| panic!("no undo in:\n{out}"))[1].to_string();
+    quoted.replace("'\\''", "'")
 }
 
 async fn history_push_follows_a_renamed_migration(mut p: P) {
