@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { DATABASES, HOSTS, type Logo } from './host-logos';
 import { MigrateWordmark } from './migrate-wordmark';
 import { VARIADIC_SQUARE, VARIADIC_SQUARES } from './variadic-mark';
-import { githubUrl, migrateDocsUrl } from '@/lib/layout.shared';
+import { githubUrl, migrateCompareUrl, migrateDocsUrl } from '@/lib/layout.shared';
 
 /**
  * Reylo Migrate's landing page, at /migrate (app/routes/migrate.tsx): a hero split in half, the
@@ -20,6 +20,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         </a>
         <div className="ml-links">
           <a href={migrateDocsUrl}>Docs</a>
+          <a href={migrateCompareUrl} className="ml-compare">Comparison</a>
           <a href="/">Reylo</a>
           <a href={githubUrl} className="ml-gh">
             <GitHubIcon />
@@ -98,6 +99,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         <div className="ml-foot-links">
           <a href={migrateDocsUrl}>Docs</a>
           <a href={`${migrateDocsUrl}#cli-reylo-migrate`}>CLI</a>
+          <a href={migrateCompareUrl}>Comparison</a>
           <a href="/">Reylo</a>
           <a href={githubUrl}>GitHub</a>
           <a href="https://www.npmjs.com/package/reylo">npm</a>
