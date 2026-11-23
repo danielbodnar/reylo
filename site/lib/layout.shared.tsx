@@ -62,10 +62,7 @@ export const pageGroups = [
   },
   {
     label: 'Migrations',
-    items: [
-      { title: 'Reylo Migrate', href: migrateDocsUrl },
-      { title: 'Migrate comparison', href: migrateCompareUrl },
-    ],
+    items: [{ title: 'Reylo Migrate', href: migrateDocsUrl }],
   },
   {
     label: 'Deployment',
