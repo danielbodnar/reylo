@@ -54,58 +54,60 @@
     },
     "prisma": {
       "name": "Prisma",
-      "version": "8.0.0-rc.34",
+      "version": "7.10.1",
       "cells": {
         "sql-schema": {
           "state": "n",
-          "note": "The schema is a Prisma contract, and `prisma contract emit` refuses a `.sql` file as its source."
+          "note": "The schema is Prisma's own schema language, and `prisma migrate dev --schema schema.sql` rejects SQL as invalid schema lines."
         },
         "views": {
           "state": "n",
-          "note": "Prisma 8's contract has no views: `prisma contract infer` leaves the view out, and `prisma contract emit` rejects a `view` block as an unsupported top-level block."
+          "note": "With the `views` preview feature, `prisma db pull` writes the view, but `prisma migrate dev --create-only` writes an empty migration for a changed query."
         },
         "functions-triggers": {
           "state": "n",
-          "note": "Prisma's contract cannot declare a function or trigger: `prisma contract infer` leaves both out, and `prisma contract emit` rejects `function` and `trigger` blocks."
+          "note": "Prisma's schema cannot declare a function or trigger: `prisma db pull` leaves both out, and `prisma migrate dev --create-only` writes an empty migration."
         },
         "rls": {
-          "state": "y"
+          "state": "n",
+          "note": "Prisma's schema cannot declare a policy: `prisma db pull` warns that row level security is not supported, and `prisma migrate dev --create-only` writes an empty migration."
         },
         "three-dialects": {
-          "state": "p",
-          "note": "Prisma 8's `prisma orm init` refuses `--target mysql` and `--target sqlite`; Prisma 7 writes migrations on all three."
+          "state": "y"
         },
         "renames": {
-          "state": "y"
+          "state": "n",
+          "note": "`prisma migrate dev` warns that the column's values will be lost and, once confirmed, writes a drop and an add, so `prisma migrate deploy` empties the column."
         },
         "data-loss": {
           "state": "y"
         },
         "view-dependencies": {
           "state": "n",
-          "note": "`prisma migration plan` writes a bare `alter column type`, which `prisma db migrate` cannot run while a view reads the column."
+          "note": "`prisma migrate dev --create-only` writes a bare `set data type`, which `prisma migrate deploy` cannot run while a view reads the column."
         },
         "non-blocking": {
           "state": "n",
-          "note": "`prisma migration plan` writes a plain `create index`, and `@@index` takes no `concurrently` argument."
+          "note": "`prisma migrate dev --create-only` writes a plain `create index`, and `@@index` takes no `concurrently` argument."
         },
         "shadow": {
-          "state": "n",
-          "note": "`prisma migration plan` writes the migration without opening any database, and `prisma db migrate` runs it straight on the target."
+          "state": "y"
         },
         "drift": {
           "state": "n",
-          "note": "`prisma db migrate` ran the pending migration on a database with a hand-added column without a word; only `prisma db verify --strict` reports the column."
+          "note": "`prisma migrate deploy` ran the pending migration on a database with a hand-added column without a word, and `prisma migrate status` listed only the pending migration."
         },
         "out-of-order": {
-          "state": "y"
+          "state": "n",
+          "note": "`prisma migrate deploy` ran a merged migration that sorts before one already run without a word."
         },
         "branch-switch": {
-          "state": "p",
-          "note": "`prisma db migrate` refused a database at the other branch's contract; `prisma db update --delete public.tags` then reached this branch's schema, but left its migration unrun."
+          "state": "n",
+          "note": "After a switch, `prisma migrate dev` reported the other branch's migration as drift and stopped, saying the whole `public` schema must be reset and all its data lost."
         },
         "lockfile": {
-          "state": "y"
+          "state": "n",
+          "note": "`migration_lock.toml` holds only the database provider, so two branches' migrations merged in git without a conflict."
         },
         "open-source": {
           "state": "y"
