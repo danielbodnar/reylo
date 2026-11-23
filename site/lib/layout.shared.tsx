@@ -12,7 +12,7 @@ export const introUrl = '/docs';
 export const migrateCompareUrl = '/migrate/compare';
 
 /** A page's address: its file's name, but the intro and Reylo Migrate's pages, which sit under their landing pages. */
-export const docsUrl = (url: string) => (url === '/' ? introUrl : url === '/migrate' ? migrateDocsUrl : url === '/migrate-compare' ? migrateCompareUrl : url);
+export const docsUrl = (url: string) => (url === '/' ? introUrl : url === '/migrate' ? migrateDocsUrl : url.startsWith('/migrate-') ? `/migrate/${url.slice('/migrate-'.length)}` : url);
 
 /** The docs site's address: reylo.dev, which every other Reylo domain redirects to (wiki/docs-site.md). */
 export const siteUrl = 'https://reylo.dev';
@@ -62,7 +62,12 @@ export const pageGroups = [
   },
   {
     label: 'Migrations',
-    items: [{ title: 'Reylo Migrate', href: migrateDocsUrl }],
+    items: [
+      { title: 'Reylo Migrate', href: migrateDocsUrl },
+      { title: 'Usage', href: '/migrate/usage' },
+      { title: 'CLI', href: '/migrate/cli' },
+      { title: 'Comparison', href: migrateCompareUrl },
+    ],
   },
   {
     label: 'Deployment',

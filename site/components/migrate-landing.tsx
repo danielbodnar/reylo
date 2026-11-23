@@ -94,7 +94,7 @@ export function MigrateLanding({ stars }: { stars?: number }) {
         </a>
         <div className="ml-foot-links">
           <a href={migrateDocsUrl}>Docs</a>
-          <a href={`${migrateDocsUrl}#cli-reylo-migrate`}>CLI</a>
+          <a href={'/migrate/cli'}>CLI</a>
           <a href={migrateCompareUrl}>Comparison</a>
           <a href="/">Reylo</a>
           <a href={githubUrl}>GitHub</a>

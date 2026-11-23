@@ -9,7 +9,8 @@ import { HeroTitle } from '@/components/hero';
 import { getMDXComponents } from '@/components/mdx';
 import { HeroActions } from '@/components/hero';
 import { loadPage } from '@/lib/content';
-import { compareTitle, docsTitle, docsUrl, githubUrl, introUrl, migrateCompareUrl, migrateDocsUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteUrl } from '@/lib/layout.shared';
+import { migrateMovedAnchorsScript } from '@/lib/moved-anchors';
+import { compareTitle, docsTitle, docsUrl, githubUrl, introUrl, migrateDocsUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteUrl } from '@/lib/layout.shared';
 import { ogAlt, ogSize } from '@/lib/og';
 import { unlistedPage } from '@/lib/rust-content';
 import { source } from '@/lib/source';
@@ -39,7 +40,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   // The intro and Reylo Migrate's docs have addresses of their own, /docs and /migrate/docs
   // (app/routes.ts); a prerender asks for each page's data at its address with `.data` after it.
   const pathname = new URL(request.url).pathname.replace(/\.data$/, '').replace(/\/$/, '');
-  const slug = params.slug ?? (pathname === migrateDocsUrl ? 'migrate' : pathname === migrateCompareUrl ? 'migrate-compare' : pathname === introUrl ? '' : undefined);
+  const slug = params.slug ?? (pathname === migrateDocsUrl ? 'migrate' : pathname.startsWith('/migrate/') ? `migrate-${pathname.slice('/migrate/'.length)}` : pathname === introUrl ? '' : undefined);
   if (slug === undefined) throw new Response('Not found', { status: 404 });
   const page = source.getPage(slug ? [slug] : []);
   if (!page) throw new Response('Not found', { status: 404 });
@@ -161,6 +162,8 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       pageTitle={pageName(slug, title)}
       brand={<Brand />}
       github={githubUrl}
+      // A link to a section of the one page the Migrate docs were goes to that section's page now.
+      before={slug === 'migrate' ? <script dangerouslySetInnerHTML={{ __html: migrateMovedAnchorsScript }} /> : undefined}
       titleAside={
         typedefs ? (
           <p className="typedef-version not-prose">
