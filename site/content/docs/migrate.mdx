@@ -166,7 +166,7 @@ $ reylo db reset
 $ reylo db wipe && reylo run --file seed.sql
 ```
 
-### Keeping a change made by hand
+### Adopting a hotfix
 
 Keep a change made on production by hand:
 
@@ -316,11 +316,11 @@ What changes:
 
 You lose the one file that shows your whole schema.
 
-## Ordering
+## Ordering <code className="dk-aside">reylo.lock</code> [#ordering]
 
 Your migrations run in one order: the lockfile's, or their names'.
 
-### Lockfile <code className="dk-aside">reylo.lock</code> [#lockfile-reylolock]
+### Lockfile
 
 The lockfile lists your migrations in order, each with a checksum chained to the one before. A migration it doesn't list yet is a draft, free to edit:
 
