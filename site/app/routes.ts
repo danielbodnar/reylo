@@ -38,4 +38,5 @@ export default [
   route('sitemap.xml', 'routes/sitemap.ts'),
   route('manifest.webmanifest', 'routes/manifest.ts'),
   route('opengraph-image.png', 'routes/opengraph-image.tsx'),
+  route('migrate/opengraph-image.png', 'routes/migrate-opengraph-image.tsx'),
 ] satisfies RouteConfig;
