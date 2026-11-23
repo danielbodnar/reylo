@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { CompareTable } from './compare-table';
 import { DATABASES, HOSTS, type Logo } from './host-logos';
 import { Install, Nav } from './home-chrome';
 import { MigrateWordmark } from './migrate-wordmark';
@@ -82,6 +83,12 @@ export function MigrateLanding({ stars }: { stars?: number }) {
       <Row n={11} title="Switch easily" visual={<Term lines={INIT} />}>
         <p>One command introspects your current schema, generates <code>schema.sql</code>, and creates your initial <code>migrations/init.sql</code>.</p>
       </Row>
+
+      <section className="ml-table">
+        <h2>Compared with other migration tools</h2>
+        <p>Hover a cross to see why.</p>
+        <CompareTable set="migrate" />
+      </section>
 
       <section className="ml-end">
         <h2>Ship faster with Reylo</h2>
