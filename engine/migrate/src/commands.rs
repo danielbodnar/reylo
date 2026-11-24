@@ -3711,11 +3711,11 @@ async fn dry_run_on(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         }
         other => other,
     };
-    // What each pending migration blocks while it reads every row of a table, on Postgres: said,
-    // not refused, since `migrate new` asked when it was written, and a hand-written one is its
-    // author's to judge.
+    // What each pending migration blocks while it reads every row of a table, on Postgres and
+    // MySQL: said, not refused, since `migrate new` asked when it was written, and a hand-written
+    // one is its author's to judge.
     let hazards = match &result {
-        Ok(plan) if plan.ok() && db.dialect() == Dialect::Postgres && !plan.pending.is_empty() => {
+        Ok(plan) if plan.ok() && matches!(db.dialect(), Dialect::Postgres | Dialect::Mysql) && !plan.pending.is_empty() => {
             let texts: Vec<&str> = plan.ran.iter().chain(&plan.pending).map(|f| f.sql.as_str()).collect();
             let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
             let found = pending_hazards(&mut shadows, &plan.ran, &plan.pending).await;
@@ -3770,10 +3770,12 @@ async fn pending_hazards(shadows: &mut Shadows<'_>, ran: &[Migration], pending: 
         return Ok(vec![]);
     }
     shadows.taint(lane);
+    // On MySQL, where a change is a migration per statement, a table a pending one made has no rows.
+    let made = if shadows.db(lane).dialect() == Dialect::Mysql { crate::locks::mysql_tables_made(pending.iter().map(|m| m.sql.as_str())) } else { Default::default() };
     let mut out = Vec::new();
     for m in pending {
         match crate::locks::run_watched(shadows.db(lane), m).await {
-            Ok(found) => out.extend(found.into_iter().map(|h| (m.name.clone(), h))),
+            Ok(found) => out.extend(found.into_iter().filter(|h| !made.contains(&h.table.to_lowercase())).map(|h| (m.name.clone(), h))),
             // The check already tried each pending migration: one that fails here says nothing more.
             Err(_) => break,
         }
@@ -5035,10 +5037,9 @@ struct Drafted {
 
 /// What a plan loses, as a sentence names it: `the column users.bio`, `the table tags`.
 fn described(loss: &str) -> String {
-    match (loss.strip_prefix("column "), loss.strip_prefix("table ")) {
-        (Some(column), _) => format!("the column {column}"),
-        (_, Some(table)) => format!("the table {table}"),
-        _ => loss.to_string(),
+    match loss.split_once(' ') {
+        Some((kind, name)) => format!("the {kind} {name}"),
+        None => loss.to_string(),
     }
 }
 
@@ -5053,7 +5054,7 @@ fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
     let mut files: Vec<String> = Vec::new();
     let mut pending = String::new();
     for loss in &plan.losses {
-        pending.push_str(&format!("-- loses data: {}\n", loss.trim_start_matches("column ").trim_start_matches("table ")));
+        pending.push_str(&format!("-- loses data: {}\n", shown_id(loss)));
     }
     for (column, why) in &plan.narrowings {
         pending.push_str(&format!("-- loses data: {} {why}\n", column.trim_start_matches("column ")));
@@ -5122,6 +5123,11 @@ fn resolve_by(ids: &[String], written: &str, exact: bool) -> Result<Vec<String>,
             "column" if w.len() >= 2 && p.len() > w.len() && same(&p[p.len() - w.len()..], &w) => by_suffix.push(id.clone()),
             _ => {}
         }
+    }
+    // A column and a MySQL partition of one table may share a name: one name for both is no answer.
+    let kinds: std::collections::BTreeSet<&str> = exact_hits.iter().filter_map(|id: &String| id.split(' ').next()).collect();
+    if kinds.len() > 1 {
+        return Err(exact_hits);
     }
     match (exact_hits.is_empty(), by_suffix.len(), by_schema.is_empty()) {
         (false, 0, _) => Ok(exact_hits),
@@ -5672,6 +5678,9 @@ fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, Stri
                 named.extend(hits);
                 stated.drop.push(w.clone());
             }
+            Err(could) if could.iter().filter_map(|c| c.split(' ').next()).collect::<std::collections::BTreeSet<_>>().len() > 1 => {
+                problems.push(Problem::new("drop-name-ambiguous", format!("The --drop flag names {w}, which is both {}", and_list(&could.iter().map(|c| described(c)).collect::<Vec<_>>()))).note("Make one of the changes in schema.sql and write its migration, then the other."))
+            }
             Err(could) => problems.push(Problem::new("drop-name-ambiguous", format!("The --drop flag names {w}, which could be any of {}", could.iter().map(&display).collect::<Vec<_>>().join(", "))).note("Name each with its table, and its schema where two share a name.")),
         }
     }
@@ -5688,11 +5697,18 @@ fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, Stri
         let list: Vec<String> = unstated.iter().map(|l| display(l)).collect();
         let what: Vec<(String, String)> = unstated.iter().map(|l| (l.split(' ').next().unwrap_or_default().to_string(), display(l))).collect();
         let title = match unstated.as_slice() {
-            [one] => format!("This {subject} drops {} and {}", drop_phrase(&what), if one.starts_with("table ") { "its rows" } else { "its data" }),
+            [one] => format!("This {subject} drops {} and {}", drop_phrase(&what), if one.starts_with("column ") { "its data" } else { "its rows" }),
             _ => format!("This {subject} drops {}, with their data", drop_phrase(&what)),
         };
+        // A column and a MySQL partition of one table may share a name, which --drop can't tell apart.
+        let shared: Vec<&(String, String)> = what.iter().filter(|(_, n)| what.iter().filter(|(_, m)| m == n).count() > 1).collect();
         let r = reading(&stated, &list, &[]);
-        let mut problem = asked.hazards(&r).iter().fold(Problem::new("drops-data", title), |p, w| p.note(format!("It also {w}."))).offer(if list.len() == 1 { "To drop it" } else { "To drop them" }, asked, r);
+        let problem = asked.hazards(&r).iter().fold(Problem::new("drops-data", title), |p, w| p.note(format!("It also {w}.")));
+        let mut problem = match shared.as_slice() {
+            [] => problem.offer(if list.len() == 1 { "To drop it" } else { "To drop them" }, asked, r),
+            [(a, name), (b, _), ..] => problem.note(format!("A {a} and a {b} share the name {name}: make one of the changes in schema.sql and write its migration, then the other.")),
+            [_] => unreachable!("a name shared by one"),
+        };
         // Where something comes as these go, any of them may be renamed: which became which is
         // for the person to say, so the command names no new name for them. Each is offered only
         // where something it could be renamed to comes.
@@ -5927,10 +5943,10 @@ async fn settle(db: &mut Db, mut current: crate::diff::Schema, target: &Target, 
 #[cfg(feature = "cli")]
 async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, target_name: &str, added: &[String], migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<Drafted, Vec<Problem>>, Error> {
     let first = draft_with(opts, files, schema_sql, target_name, added, migration, choices, &[], log).await?;
-    // On Postgres, each command a refusal suggests is tried, and takes `--blocking` where the
-    // migration it writes would be refused for nothing else: one more run would only add it.
+    // On Postgres and MySQL, each command a refusal suggests is tried, and takes `--blocking` where
+    // the migration it writes would be refused for nothing else: one more run would only add it.
     let readings: Vec<Choices> = match &first {
-        Err(problems) if !choices.blocking && Dialect::of_url(&opts.url).ok() == Some(Dialect::Postgres) => {
+        Err(problems) if !choices.blocking && matches!(Dialect::of_url(&opts.url).ok(), Some(Dialect::Postgres | Dialect::Mysql)) => {
             let mut out: Vec<Choices> = Vec::new();
             for r in problems.iter().flat_map(|p| &p.readings) {
                 if !out.contains(r) {
@@ -6064,6 +6080,11 @@ async fn draft_with(opts: &Options, files: &[Migration], schema_sql: &str, targe
             Ok((None, hazards))
         };
         let (mut failed, mut hazards) = run_pieces(shadows.db(c), pieces(&split, &plan)).await?;
+        // On MySQL each statement is a file of its own: a table an earlier one made has no rows.
+        if d == Dialect::Mysql {
+            let made = crate::locks::mysql_tables_made(plan.runnable().map(String::as_str));
+            hazards.retain(|h| !made.contains(&h.table.to_lowercase()));
+        }
         let wanted = match shadows.lines(a).await? {
             Ok(lines) => lines,
             Err((_, e)) => return Ok(Err(vec![fails_problem(target_name, e)])),
@@ -6122,7 +6143,7 @@ async fn draft_with(opts: &Options, files: &[Migration], schema_sql: &str, targe
             }
         };
         for loss in &plan.losses {
-            notes.push(format!("  {} Drops {} and its {}", paint("yellow", "!"), described(loss), if loss.starts_with("table ") { "rows" } else { "data" }));
+            notes.push(format!("  {} Drops {} and its {}", paint("yellow", "!"), described(loss), if loss.starts_with("column ") { "data" } else { "rows" }));
         }
         for (column, why) in &plan.narrowings {
             notes.push(format!("  {} Column {} {why}", paint("yellow", "!"), column.trim_start_matches("column ")));
@@ -7746,7 +7767,7 @@ async fn scoped_change(db: &mut Db, history: &mut Db, explaining: &[crate::diff:
     let mut change = crate::diff::plan(&target, &current, alterer.as_ref());
     style(db, &mut change, &current).await.ok()?;
     let statements: Vec<String> = undo.runnable().map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).collect();
-    let lost: Vec<String> = undo.losses.iter().chain(undo.narrowings.iter().map(|(column, _)| column)).map(|l| l.trim_start_matches("column ").trim_start_matches("table ").to_string()).collect();
+    let lost: Vec<String> = undo.losses.iter().chain(undo.narrowings.iter().map(|(column, _)| column)).map(|l| shown_id(l)).collect();
     (!statements.is_empty() && !change.statements.is_empty()).then(|| (change.sql(), statements, lost))
 }
 
@@ -8265,7 +8286,7 @@ fn dropped_items(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<S
         .losses
         .iter()
         .map(|l| {
-            let name = l.trim_start_matches("column ").trim_start_matches("table ");
+            let name = shown_id(l);
             match counts.get(l).copied() {
                 Some(1) => format!("{name} (1 row)"),
                 Some(n) if n > 1 => format!("{name} ({n} rows)"),
