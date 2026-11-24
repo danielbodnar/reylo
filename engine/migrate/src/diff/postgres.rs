@@ -1589,7 +1589,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select p.oid, format('%I', p.polname) as name, format('%I.%I', n.nspname, c.relname) as rel, c.oid as reloid, p.polcmd as cmd, p.polpermissive as permissive,
               (select string_agg(case when r = 0 then 'public' else quote_ident(pg_get_userbyid(r)) end, ', ' order by 1) from unnest(p.polroles) r) as roles,
               pg_get_expr(p.polqual, p.polrelid) as qual, pg_get_expr(p.polwithcheck, p.polrelid) as check
-            from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace where {kept_rel}",
+            from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace where {ns} and {kept_rel}",
         ))
         .await?
     {
@@ -1660,7 +1660,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select s.oid, format('%I.%I', n.nspname, s.stxname) as name, pg_get_statisticsobjdef(s.oid) as def, s.stxrelid as rel,
               nullif(coalesce(s.stxstattarget::int, -1), -1) as target
-            from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {}",
+            from pg_statistic_ext s join pg_namespace n on n.oid = s.stxnamespace where {ns} and {} and {}",
+            crate::catalog::on_no_temporary_table("s"),
             format!("({} or {})", not_platform("s.stxowner"), not_platform_schema("n"))
         ))
         .await?
