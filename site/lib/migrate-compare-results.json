@@ -289,14 +289,16 @@
           "state": "y"
         },
         "renames": {
-          "state": "y"
+          "state": "p",
+          "note": "A rename keeps its rows only when answered at a prompt in a terminal or marked with `-- atlas:renamed_from`. Otherwise, as in CI or an agent's shell, `atlas migrate diff` writes a drop and an add without a word."
         },
         "data-loss": {
           "state": "p",
           "note": "A drop fails `atlas migrate lint` until the file says `-- atlas:nolint destructive`, but `atlas migrate diff` writes it and `atlas migrate apply` runs it without asking."
         },
         "view-dependencies": {
-          "state": "y"
+          "state": "p",
+          "note": "Atlas's documentation never says that a view reading the column is taken down and put back around the change."
         },
         "non-blocking": {
           "state": "p",
@@ -321,7 +323,7 @@
         },
         "open-source": {
           "state": "n",
-          "note": "Atlas Pro is proprietary, at $9 per seat a month. The Apache-2.0 community build leaves out views, functions, triggers, policies, extensions, domains, linting and drift checks."
+          "note": "Atlas Pro is proprietary, at $9 per seat a month, and runs only on a machine signed in with `atlas login`. The Apache-2.0 community build leaves out views, functions, triggers, policies, extensions, domains, linting and drift checks."
         }
       }
     },
