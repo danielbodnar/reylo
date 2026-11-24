@@ -2267,6 +2267,24 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
         }
     }
+    // A table's copy of another's check is no object of its own, but holds what it calls: the
+    // table carries that, read off the copy itself, whichever ancestor the check came down from.
+    for r in db
+        .rows(
+            "select co.conrelid, format('%s', d.refclassid::regclass) as rcls, d.refobjid, d.refobjsubid
+            from pg_constraint co join pg_depend d on d.classid = 'pg_constraint'::regclass and d.objid = co.oid and d.deptype = 'n'
+            where co.contype = 'c' and co.coninhcount > 0 and not (d.refclassid = 'pg_class'::regclass and d.refobjid = co.conrelid) and d.refobjid >= 16384",
+        )
+        .await?
+    {
+        let (Some(table), Some(read)) = (ids.of("pg_class", oid(&r, "conrelid"), 0), ids.of(r.text("rcls"), oid(&r, "refobjid"), r.text("refobjsubid").parse().unwrap_or(0))) else { continue };
+        if let Some(o) = s.objects.get_mut(&table) {
+            let line = format!("{COPY_READS}{read}");
+            if !o.extra.contains(&line) {
+                o.extra.push(line);
+            }
+        }
+    }
     // An expression index's statistics depend on what its index reads: the server's rebuild of the
     // index around a change of one of them loses them, and the plan sets them again after.
     let index_columns: Vec<(String, BTreeSet<String>)> = s
@@ -3484,6 +3502,8 @@ fn columns_left(from: &Object, to: &Object) -> Vec<(String, String)> {
 /// name and definition).
 const OWN_CONSTRAINT: &str = "constraint of table ";
 const COPIED_CONSTRAINT: &str = "constraint copied to table ";
+/// What a table's copy of another's check calls, by id.
+const COPY_READS: &str = "copied check reads ";
 
 /// The constraints a table's joining or leaving another carries across, by the server's rules: one
 /// it leaves keeps its copies of the other's as its own, and one it joins takes its own that match
@@ -4275,7 +4295,20 @@ impl Alterer for PostgresAlterer {
         let columns: Vec<String> = to.extra.iter().filter_map(|l| l.strip_prefix(TABLE_COLUMN)?.split(SEP).nth(2)).map(String::from).collect();
         let mut out: Vec<String> = parents.iter().flat_map(|p| copies.iter().map(move |c| format!("constraint {p}.{c}"))).collect();
         out.extend(parents.iter().flat_map(|p| columns.iter().map(move |c| format!("column {p}.{c}"))));
+        // A parent's check may be a copy itself, of an ancestor's: what the copies call, as the
+        // target records them, is made first too.
+        out.extend(to.extra.iter().filter_map(|l| l.strip_prefix(COPY_READS)).map(String::from));
         out
+    }
+
+    fn copies_read(&self, from: &Object, to: &Object) -> Vec<String> {
+        // A table that leaves a parent drops its copies of the parent's checks after it leaves. One
+        // it added itself before it joined is its own as well, which the parent's drop leaves: what
+        // the check calls, as the copy's own records say, goes after the table's change.
+        if from.kind != Some(Kind::Table) || !joins_or_leaves(from, to).1 {
+            return Vec::new();
+        }
+        from.extra.iter().filter_map(|l| l.strip_prefix(COPY_READS)).map(String::from).collect()
     }
 
     fn releases(&self, from: &Object, to: &Object) -> bool {
