@@ -4053,6 +4053,8 @@ on!(
     init_writes_a_database_of_grants_alone,
     init_writes_the_event_triggers_it_compares,
     init_writes_the_publications_it_compares,
+    init_reads_an_in_list_on_a_varchar_column_as_it_reads_back,
+    init_reads_a_row_comparison_as_it_reads_back,
     a_dump_keeps_a_function_body_as_written,
     a_history_that_does_not_replay_is_refused_before_anything_changes,
     without_a_lock_a_history_out_of_name_order_is_held_to_name_order,
@@ -7053,6 +7055,58 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         let made: Vec<String> = q.rows("select pubname::text as n from pg_publication order by 1").await.iter().map(|r| r.text("n").to_string()).collect();
         assert_eq!(made, ["active_users", "supabase_realtime"]);
+    }
+
+    /// A varchar column's `in (…)` renders as a cast of the whole array, which Postgres reads back as
+    /// a cast of each element: a database made from that rendering is still the same schema, so init
+    /// starts the project, with such a list in a check, a partial index's predicate and a policy,
+    /// and a later migration leaves them alone. A comment that holds such text is compared as
+    /// written.
+    pub async fn init_reads_an_in_list_on_a_varchar_column_as_it_reads_back(mut p: P) {
+        p.exec("create table items (id int primary key, status varchar(10) not null check (status in ('open', 'closed')))").await;
+        p.exec("create index open_items on items (id) where status not in ('closed', 'gone')").await;
+        p.exec("alter table items enable row level security").await;
+        p.exec("create policy open_only on items using (status in ('open', 'new')) with check (status in ('open', 'closed'))").await;
+        // A call in the list is a value too, as the literals beside it say.
+        p.exec("create function vf() returns varchar language sql as 'select ''c''::varchar'").await;
+        p.exec("create table tags (name varchar(10) check (name in ('a', 'b', vf())), label varchar(10) check (label in ('a', vf() collate \"C\")))").await;
+        p.exec("comment on table items is 'Example: \"((a AND b) AND c)\"'").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        // A comment's text is compared as written, and a change to it is a migration.
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert!(schema.contains("((a AND b) AND c)"), "{schema}");
+        p.schema(&format!("{}\ncreate table notes (id int primary key);\n", schema.replace("((a AND b) AND c)", "(a AND b AND c)")));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "notes", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let written = p.files().into_iter().find(|f| f.ends_with("_notes.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&written)).unwrap();
+        assert!(sql.contains("(a AND b AND c)"), "the comment's change is in the migration:\n{sql}");
+        assert!(!sql.contains("check") && !sql.contains("index") && !sql.contains("policy"), "the migration remakes no check, index or policy:\n{sql}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A row comparison of three or more columns is stored as ORs nested to the left, which
+    /// Postgres reads back as one: init starts the project, with such a comparison in a check, a
+    /// trigger's condition and a partial index's predicate.
+    pub async fn init_reads_a_row_comparison_as_it_reads_back(mut p: P) {
+        p.exec(
+            "create table t (id int primary key, a int, b int, c int, d int, e int, f int,
+              constraint c_distinct check ((a, b, c) is distinct from (d, e, f)),
+              constraint c_not_distinct check ((a, b, c) is not distinct from (d, e, f)),
+              constraint c_four check ((a, b, c, id) is distinct from (d, e, f, id)),
+              constraint c_eq check ((a, b, c) = (d, e, f) or a is null),
+              constraint c_ne check ((a, b, c) <> (d, e, f) or a is null),
+              constraint c_lt check ((a, b, c) < (d, e, f) or a is null),
+              constraint c_mixed check (((a, b, c) is distinct from (d, e, f)) and a > 0 and b > 0))",
+        )
+        .await;
+        p.exec("create function f() returns trigger language plpgsql as $$ begin return new; end $$").await;
+        p.exec("create trigger t_changed after update of a, b, c on t for each row when ((old.a, old.b, old.c) is distinct from (new.a, new.b, new.c)) execute function f()").await;
+        p.exec("create trigger t_same after update on t for each row when ((old.a, old.b, old.c) is not distinct from (new.a, new.b, new.c)) execute function f()").await;
+        p.exec("create index t_pi on t (id) where (a, b, c) is distinct from (d, e, f)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
     }
 
     pub async fn an_extension_left_in_a_schema_of_the_projects_own_stops_no_push(mut p: P) {
