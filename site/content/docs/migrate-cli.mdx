@@ -225,6 +225,29 @@ $ reylo migrate deploy --dry-run
 
 A failed migration rolls back and records nothing. Fix the file, run `reylo migrate dev`, and deploy again. Where a database already ran the old version, write a new migration instead.
 
+A migration can also fail on rows the database already holds. The refusal gives a query that lists them, to fix before you deploy again:
+
+```terminal
+$ reylo migrate deploy
+Applying to postgres://db.example.com/app
+  ✓ 20261123211603_drop_team_plan.sql    applied · 44 ms
+  ✗ 20261123211604_drop_team_plan_2.sql  failed
+
+✗ The migration 20261123211604_drop_team_plan_2.sql failed on rows that break users_plan_check
+  check constraint "users_plan_check" of relation "users" is violated by some row
+  The migration before it, 20261123211603_drop_team_plan.sql, added users_plan_check without checking the rows already in users: rows written from now on are held to it, and those aren't.
+  Nothing was recorded, so the next deploy runs it again.
+
+  List the rows that break it:
+    select * from users where not (plan = ANY (ARRAY['free'::text, 'pro'::text]));
+  Fix them here, then deploy again:
+    reylo migrate deploy
+  If the rows are right and only development ran 20261123211604_drop_team_plan_2.sql, change users_plan_check in reylo/schema.sql and delete it, then take it off development and write the replacement:
+    reylo migrate dev
+    reylo migrate new <name>
+    reylo migrate dev
+```
+
 A deploy cut off between migrations picks up where it stopped, once it has checked that the schema hasn't changed since. Where the check fails or can't run, as on MySQL, it's refused until `reylo migrate history push` stores the fingerprint again, which needs a shadow database.
 
 A migration and the build that needs it go live at different moments. The old build's queries fail on a renamed or dropped column. So rename in steps. To rename `users.email` to `contact`, add the new column and copy its values, then deploy code that reads `contact` and writes both:
