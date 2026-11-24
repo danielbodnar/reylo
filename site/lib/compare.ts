@@ -5,7 +5,8 @@ import migrateResultsJson from '@/lib/migrate-compare-results.json';
  * The docs' comparison, /compare: which tools and rows it shows. Every mark comes from
  * lib/compare-results.json, which lab/compare writes from real runs of each tool.
  */
-export type CompareCell = { state: 'y' | 'p' | 'n'; note?: string };
+/** A tool's mark in a row; `pro` is a yes only in the tool's paid build, which `note` says. */
+export type CompareCell = { state: 'y' | 'p' | 'n'; note?: string; pro?: boolean };
 
 export const compareResults = results as unknown as { at: string; tools: Record<string, { name: string; version: string; cells: Record<string, CompareCell> }> };
 

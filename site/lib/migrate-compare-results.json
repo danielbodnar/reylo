@@ -290,22 +290,34 @@
           "state": "y"
         },
         "domains": {
-          "state": "y"
+          "state": "y",
+          "pro": true,
+          "note": "Only in Atlas Pro, which is paid: the Apache-2.0 community build leaves out domains."
         },
         "views": {
-          "state": "y"
+          "state": "y",
+          "pro": true,
+          "note": "Only in Atlas Pro, which is paid: the Apache-2.0 community build leaves out views."
         },
         "functions": {
-          "state": "y"
+          "state": "y",
+          "pro": true,
+          "note": "Only in Atlas Pro, which is paid: the Apache-2.0 community build leaves out functions."
         },
         "triggers": {
-          "state": "y"
+          "state": "y",
+          "pro": true,
+          "note": "Only in Atlas Pro, which is paid: the Apache-2.0 community build leaves out triggers."
         },
         "rls": {
-          "state": "y"
+          "state": "y",
+          "pro": true,
+          "note": "Only in Atlas Pro, which is paid: the Apache-2.0 community build leaves out policies."
         },
         "extensions": {
-          "state": "y"
+          "state": "y",
+          "pro": true,
+          "note": "Only in Atlas Pro, which is paid: the Apache-2.0 community build leaves out extensions."
         },
         "grants": {
           "state": "p",
