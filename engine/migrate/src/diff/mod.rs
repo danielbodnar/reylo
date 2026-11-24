@@ -31,10 +31,7 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
             let version = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
             Box::new(postgres::PostgresAlterer::read(db, version).await?)
         }
-        Dialect::Mysql => {
-            let mode = db.rows("select @@session.sql_mode as m").await?.first().map(|r| r.text("m").to_string()).unwrap_or_default();
-            Box::new(mysql::MysqlAlterer::for_mode(&mode))
-        }
+        Dialect::Mysql => Box::new(mysql::MysqlAlterer::default()),
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
     })
 }
@@ -160,6 +157,18 @@ pub trait Alterer: Send {
         let _ = (from, to);
         None
     }
+    /// The definition `from` has once the server renames the columns `renamed` names under it (each
+    /// an old column's id, to the new one's), as a key's column list follows its columns; None where
+    /// it can't tell. An object whose definition then is the target's is left as it is.
+    fn renamed_under(&self, from: &Object, renamed: &BTreeMap<String, String>) -> Option<String> {
+        let _ = (from, renamed);
+        None
+    }
+    /// Whether a column changed from `from` to `to` keeps every value it holds (a new default), so
+    /// that a key on it can stay as it is.
+    fn keeps_values(&self, from: &Object, to: &Object) -> bool {
+        from.def == to.def
+    }
     /// Both schemas, given before it asks for any statement: an alterer whose statements for one
     /// table reach others (SQLite's rebuild, the tables that reference it) reads them.
     fn schemas(&self, from: &Schema, to: &Schema) {
@@ -177,6 +186,12 @@ pub trait Alterer: Send {
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let _ = (from, to);
         None
+    }
+    /// What a change of `from` to `to` in place drops with its rows, beside the objects the plan
+    /// drops: a MySQL partition taken out of its table, `partition measurements.p2026`.
+    fn loses(&self, from: &Object, to: &Object) -> Vec<String> {
+        let _ = (from, to);
+        Vec::new()
     }
     /// Whether a change of `from` to `to` changes the object under what depends on it (an enum
     /// made again, a column's type), which the server refuses while a view, rule, policy or trigger
@@ -271,6 +286,10 @@ pub enum TypeClass {
 
 /// What a generated column's object carries, whose values are its expression's.
 pub const GENERATED: &str = "generated";
+
+/// What a table's object carries whose rows are another table's: SQLite's external-content
+/// full-text index, which holds only an index of its content table's rows, made again from them.
+pub const ROWS_ELSEWHERE: &str = "its rows are another table's";
 
 /// What a change of a column's values from one type to another loses without failing, written
 /// after "which": None where every value is kept or the change fails on one it can't hold.
@@ -376,7 +395,7 @@ impl Plan {
     pub fn sql(&self) -> String {
         let mut out = String::new();
         for loss in &self.losses {
-            out.push_str(&format!("-- loses data: {}\n", loss.trim_start_matches("column ").trim_start_matches("table ")));
+            out.push_str(&format!("-- loses data: {}\n", loss.split_once(' ').map_or(loss.as_str(), |(_, name)| name)));
         }
         for (column, why) in &self.narrowings {
             out.push_str(&format!("-- loses data: {} {why}\n", column.trim_start_matches("column ")));
@@ -833,7 +852,25 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     // Altered in a way a view, rule, policy or trigger on it blocks, and of those, made again.
     let mut blocking: BTreeSet<String> = BTreeSet::new();
     let mut remade: BTreeSet<String> = BTreeSet::new();
+    // What the server renames with a renamed column (a key on it, a foreign key to it), whose
+    // definition then is the target's, stays as it is, with the renamed columns it needs.
+    let renamed_columns: BTreeMap<String, String> = decided.iter().map(|(new, (old, _))| (old.clone(), new.clone())).collect();
+    let mut kept_through: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (id, a) in &from.objects {
+        if let Some(b) = to.objects.get(id).filter(|b| a.def != b.def) {
+            let under: Vec<String> = a.deps.iter().filter(|d| renamed_columns.contains_key(*d)).cloned().collect();
+            // Not on a table with partitions or children, whose copies of it keep names made from
+            // the old column's, nor on a column renamed with its parent's.
+            let parented = a.owner.as_deref().is_some_and(|t| [from, to].iter().any(|s| s.objects.values().any(|o| o.kind == Some(Kind::Table) && parent_of(o).as_deref() == Some(t))));
+            let follows = under.iter().any(|old| followers.contains(&renamed_columns[old]));
+            // Nor where a column it holds changes its values (its type, its collation, a stored
+            // expression), which the server may refuse under it.
+            let changes = a.deps.iter().filter(|d| from.objects.get(*d).is_some_and(|c| c.kind == Some(Kind::Column))).any(|d| to.objects.get(renamed_columns.get(d).unwrap_or(d)).is_none_or(|c| !alterer.keeps_values(&from.objects[d], c)));
+            if !under.is_empty() && !parented && !follows && !changes && alterer.renamed_under(a, &renamed_columns).is_some_and(|d| d == b.def) {
+                kept_through.insert(id.clone(), under);
+                continue;
+            }
+        }
         match to.objects.get(id) {
             None if left.contains(id) => {}
             None => {
@@ -912,8 +949,16 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         let Some(mut statements) = alterer.rename(&from.objects[old_id], &to.objects[new_id]) else { continue };
         let _ = was_stated;
         if from.objects[old_id].def != to.objects[new_id].def {
+            // What the rename already did, such as a Postgres not null renamed with its column, the
+            // change would do again, on a name no longer there.
             match alterer.alter(&from.objects[old_id], &to.objects[new_id]) {
-                Some(more) => statements.extend(more),
+                Some(more) => {
+                    for s in more {
+                        if !statements.contains(&s) {
+                            statements.push(s);
+                        }
+                    }
+                }
                 None => continue,
             }
         }
@@ -935,6 +980,13 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     for (new_id, (old_id, _)) in &renames {
         drops.remove(old_id);
         creates.remove(new_id);
+    }
+    // One whose column the plan doesn't rename after all (its table made again) is made again.
+    for (id, under) in &kept_through {
+        if !under.iter().all(|old| renames.values().any(|(o, _)| o == old)) {
+            drops.insert(id.clone());
+            creates.insert(id.clone());
+        }
     }
 
     // Whatever depends on an object dropped and created again goes and comes back with it, and so
@@ -1732,6 +1784,12 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             plan.pairs.push((old_id.clone(), last_written(new_id), (a.def.clone(), b.def.clone()), alterer.narrows(a, b)));
         }
     }
+    // What a change in place drops with its rows.
+    for id in alters.keys() {
+        if let (Some(a), Some(b)) = (from.objects.get(id), to.objects.get(id)) {
+            plan.losses.extend(alterer.loses(a, b));
+        }
+    }
     // A column kept, or renamed, whose type changes so that values are lost without failing.
     for (id, a) in from.objects.iter().filter(|(_, o)| o.kind == Some(Kind::Column)) {
         let to_id = renames.iter().find(|(_, (old, _))| old == id).map(|(new, _)| new).unwrap_or(id);
@@ -1752,9 +1810,11 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // A table or column dropped loses its rows, made again or not; a column whose table
                 // goes is the table's loss.
                 let in_lost_table = o.kind == Some(Kind::Column) && o.owner.as_ref().is_some_and(|t| drops.contains(t));
-                // A foreign table's rows are its server's.
+                // A foreign table's rows are its server's, and an external-content index's its
+                // content table's, unless it is made again as a table that holds its own.
                 let table = if o.kind == Some(Kind::Column) { o.owner.as_ref().and_then(|t| from.objects.get(t)) } else { Some(o) };
-                let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")));
+                let elsewhere = |t: &Object| t.extra.iter().any(|l| l == ROWS_ELSEWHERE);
+                let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")) || (elsewhere(t) && to.objects.get(&t.id).is_none_or(elsewhere)));
                 // A generated column's values are its expression's, which loses nothing, and so
                 // are those of a column held from one (a partition's).
                 let marked = |c: &Object| c.extra.iter().any(|l| l == GENERATED);

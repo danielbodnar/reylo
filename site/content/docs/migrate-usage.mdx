@@ -35,6 +35,17 @@ $ reylo migrate new drop_bio --drop users.bio
 $ reylo migrate new rename_bio --rename users.bio=about
 ```
 
+### Changing a large table
+
+A change that blocks writes to a table while it reads every row is refused until you accept it:
+
+```terminal
+# a column's new type copies its table, on Postgres and MySQL
+$ reylo migrate new widen_amount --blocking
+```
+
+On a large table, the app's writes wait for as long as that takes. To change a column without copying its table, add a column, fill it in batches, then swap the two, each step a migration of its own.
+
 ### Switching branches
 
 After a switch, pull or merge, run `reylo migrate dev`:
@@ -105,6 +116,31 @@ $ reylo migrate deploy --url $PROD_URL
 ```
 
 It moves yours past no migration that changes data. Past one, it refuses and says to undo your change on production, then deploy. It prints the undo where it can run it safely. A server that ran them before yours, such as staging, takes your change too. Its deploy refusal gives the commands.
+
+### Moving from another tool
+
+Start from a database your old tool migrated, then record the baseline on every other database:
+
+```terminal
+# write schema.sql and init.sql from your development database
+$ reylo migrate init
+
+# record init.sql as run on production, running nothing
+$ reylo migrate history push --url $PROD_URL
+```
+
+Reylo leaves the old tool's history table out of both files and every comparison. Drop it once nothing reads it:
+
+```sql tab="Prisma Migrate"
+drop table if exists _prisma_migrations;
+```
+
+```sql tab="Drizzle Kit"
+drop table if exists drizzle.__drizzle_migrations;
+
+-- where nothing else is in the drizzle schema
+drop schema if exists drizzle;
+```
 
 ## Schema <code className="dk-aside">schema.sql</code> [#schema-schemasql]
 

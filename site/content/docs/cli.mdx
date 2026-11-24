@@ -32,10 +32,10 @@ To pin a version, name it in mise's `mise.toml`. Every developer and CI job then
 
 ```toml title="mise.toml"
 [tools]
-"github:reylosql/reylo" = "0.8.0"
+reylo = "0.8.3"
 ```
 
-The scripts take `REYLO_VERSION=0.8.0`. The image takes a tag, as `ghcr.io/reylosql/reylo:0.8.0`.
+The scripts take `REYLO_VERSION=0.8.3`. The image takes a tag, as `ghcr.io/reylosql/reylo:0.8.3`.
 
 Each command reads the database your project names, as the type check does:
 
@@ -49,9 +49,9 @@ Commands:
     --format <format>      json, the default, yaml or typescript
 <Rust>
     --format rust          Print each statement's Rust module for sqlx
-  generate <generator>     Write each .sql file's module for a language
-    --out <file>           Write every module into one file
 </Rust>
+  generate <generator>     Write every .sql file's module into one file
+    --out <file>           The file to write
   migrate <command>        Write, check and run your migrations
   db <command>             Push, reset, wipe or print a development database
   run <sql>                Run SQL as written, recording nothing
@@ -200,7 +200,7 @@ Commands:
   init                     Start from this database
     --schema <name>        A schema to read; repeat for more (Postgres; all by default)
   new <name>               Write the next migration, from schema.sql or this database
-    --drop <names>         Accept what it drops: tables and columns
+    --drop <names>         Accept what it drops: tables, columns and partitions
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
   dev                      Apply pending migrations, rewinding if needed (may drop data), and write the lockfile
@@ -296,7 +296,7 @@ Usage: reylo db <command> [flags]
 
 Commands:
   push                     Synchronize this database with schema.sql (may be destructive)
-    --drop <names>         Accept what it drops: tables and columns
+    --drop <names>         Accept what it drops: tables, columns and partitions
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
@@ -347,10 +347,21 @@ reylo db introspect
 reylo db introspect --schema app
 ```
 
-<Rust>
 ## `reylo generate`
 
-Writes each `.sql` file's module for a language, as [`#[reylo::query]`](/rust#codegen) does for Rust.
+Writes every query into one TypeScript file ([Codegen](/typescript#codegen)):
+
+```terminal
+$ npx reylo generate typescript 'src/queries/**/*.sql' --out src/queries.ts
+✓ Wrote src/queries.ts
+```
+
+<Rust>
+For Rust, name the `rust-sqlx` generator ([Codegen](/rust#codegen)):
+
+```sh
+reylo generate rust-sqlx --out src/queries.rs
+```
 
 </Rust>
 
