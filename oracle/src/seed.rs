@@ -553,7 +553,7 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
 /// A statement's parameters, several assignments: each takes the next value of every pool; then
 /// again with the n-th parameter's pool turned n places on, so that two parameters of one type,
 /// whose pools are the same, also hold different values. `null` stands in for a pool with no value.
-fn assignments<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<Vec<T>> {
+pub(crate) fn assignments<T: Clone + PartialEq>(pools: &[Vec<T>], null: &T) -> Vec<Vec<T>> {
     if pools.is_empty() {
         return vec![Vec::new()];
     }
@@ -938,7 +938,7 @@ fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Ite
 /// another length, a NULL element in an array typed without one, its elements separated by
 /// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
 /// the column's null to the run time, so it contradicts a column typed non-null.
-fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
+pub(crate) fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
     let whole: Type = serde_json::from_value(ty.clone()).ok()?;
     // An enum's values, from an enum type, a CHECK list or a literal: the value is one of them,
     // and of the type they are of.
@@ -1008,7 +1008,7 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
 /// and any other value of a kind written as text by its text.
 pub(crate) fn literal_contradiction(ty: &Type, text: &str) -> Option<String> {
     let Kind::Enum(e) = &ty.kind else { return None };
-    let values = &e.values;
+    let values: Vec<&str> = e.texts().collect();
     let none_of = || format!("typed as one of {values:?} holds {text:?}");
     match &e.ty.kind {
         Kind::Integer(_) | Kind::Decimal(_) => (!values.iter().any(|v| decimal_cmp(text, v) == Some(std::cmp::Ordering::Equal))).then(none_of),
@@ -1022,9 +1022,9 @@ pub(crate) fn literal_contradiction(ty: &Type, text: &str) -> Option<String> {
                 "f" | "false" | "0" => "false",
                 _ => return Some(format!("typed as a boolean holds {text}")),
             };
-            (!values.iter().any(|v| v == value)).then(none_of)
+            (!values.iter().any(|v| *v == value)).then(none_of)
         }
-        _ => (!values.iter().any(|v| v == text)).then(none_of),
+        _ => (!values.iter().any(|v| *v == text)).then(none_of),
     }
 }
 
@@ -1749,7 +1749,7 @@ pub fn check_sqlite<D: SqliteDb + ?Sized>(db: &D, statements: &[(String, String,
                                         _ => unreachable!(),
                                     };
                                     let why = serde_json::from_value::<Type>(col["type"].clone()).ok().and_then(|ty| match &ty.kind {
-                                        Kind::Enum(e) if matches!(e.ty.kind, Kind::Text(_)) => Some(format!("typed as one of {:?} holds the number {number}", e.values)),
+                                        Kind::Enum(e) if matches!(e.ty.kind, Kind::Text(_)) => Some(format!("typed as one of {:?} holds the number {number}", e.texts().collect::<Vec<_>>())),
                                         _ => literal_contradiction(&ty, &number).or_else(|| fact_contradiction(&ty, &number)),
                                     });
                                     if let Some(why) = why {

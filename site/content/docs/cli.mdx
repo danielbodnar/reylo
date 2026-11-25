@@ -5,10 +5,14 @@ description: Every command and flag of the reylo command, with where each is cov
 
 Every command and flag of `reylo`.
 
-In a JavaScript project, run it with `npx reylo`. Elsewhere, install the binary on its own:
+Install the `reylo` CLI (or run `npx reylo` inside a JavaScript project):
 
 ```bash tab="Homebrew"
 brew install reylosql/tap/reylo
+```
+
+```bash tab="npm"
+npm install --global reylo
 ```
 
 ```bash tab="curl"
@@ -49,9 +53,9 @@ Commands:
     --format <format>      json, the default, yaml or typescript
 <Rust>
     --format rust          Print each statement's Rust module for sqlx
-  generate <generator>     Write each .sql file's module for a language
-    --out <file>           Write every module into one file
 </Rust>
+  generate <generator>     Write every .sql file's module into one file
+    --out <file>           The file to write
   migrate <command>        Write, check and run your migrations
   db <command>             Push, reset, wipe or print a development database
   run <sql>                Run SQL as written, recording nothing
@@ -200,12 +204,13 @@ Commands:
   init                     Start from this database
     --schema <name>        A schema to read; repeat for more (Postgres; all by default)
   new <name>               Write the next migration, from schema.sql or this database
-    --drop <names>         Accept what it drops: tables and columns
+    --drop <names>         Accept what it drops: tables, columns and partitions
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
-  dev                      Apply all unapplied migrations and regenerate the lockfile
+  dev                      Apply pending migrations, rewinding if needed (may drop data), and write the lockfile
   deploy                   Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
+      -- <command>         Then run the command, such as your build, typed against that shadow
   status                   Check that this database and the files are in step
   lock                     Write the lock from this database's history
   history push             Record the migrations this database's schema has
@@ -219,7 +224,7 @@ Flags:
 
 ### `init`
 
-Starts your migrations from an existing database:
+Starts your migrations from an existing database ([details](/migrate/cli#init)):
 
 ```sh
 reylo migrate init
@@ -228,7 +233,7 @@ reylo migrate init --schema public --schema billing
 
 ### `new`
 
-Writes the next migration, from your change to `schema.sql`:
+Writes the next migration from your change to `schema.sql` ([details](/migrate/cli#new)):
 
 ```sh
 reylo migrate new add_bio
@@ -239,7 +244,7 @@ reylo migrate new add_bio --blocking
 
 ### `dev`
 
-Applies all unapplied migrations to your development database and regenerates the lockfile:
+Applies pending migrations to your development database, rewinding if needed, and writes the lockfile ([details](/migrate/cli#dev)). A rewind may drop data:
 
 ```sh
 reylo migrate dev
@@ -247,7 +252,7 @@ reylo migrate dev
 
 ### `deploy`
 
-Runs the lock's pending migrations, with no shadow database:
+Runs the lock's pending migrations with no shadow database ([details](/migrate/cli#deploy)):
 
 ```sh
 reylo migrate deploy
@@ -256,7 +261,7 @@ reylo migrate deploy --dry-run
 
 ### `status`
 
-Checks that a database and your files are in step, changing nothing:
+Checks that a database and your files are in step without changing anything ([details](/migrate/cli#status)):
 
 ```sh
 reylo migrate status
@@ -265,7 +270,7 @@ reylo migrate status --url $PROD_URL
 
 ### `lock`
 
-Writes the lock from your database's history:
+Writes the lock from your database's history ([details](/migrate/cli#lock)):
 
 ```sh
 reylo migrate lock
@@ -273,7 +278,7 @@ reylo migrate lock
 
 ### `history push`
 
-Records your migrations as run on a database that already has their schema:
+Records your migrations as run on a database that already has their schema ([details](/migrate/cli#history-push)):
 
 ```sh
 reylo migrate history push --url $PROD_URL
@@ -281,7 +286,7 @@ reylo migrate history push --url $PROD_URL
 
 ### `history pull`
 
-Writes your migration files from a database's history:
+Writes your migration files from a database's history ([details](/migrate/cli#history-pull)):
 
 ```sh
 reylo migrate history pull --url $PROD_URL
@@ -296,7 +301,7 @@ Usage: reylo db <command> [flags]
 
 Commands:
   push                     Synchronize this database with schema.sql (may be destructive)
-    --drop <names>         Accept what it drops: tables and columns
+    --drop <names>         Accept what it drops: tables, columns and partitions
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
@@ -313,7 +318,7 @@ Flags:
 
 ### `push`
 
-Synchronizes your development database with `schema.sql`, writing no migration:
+Synchronizes your development database with `schema.sql` without writing a migration ([details](/migrate/cli#push)):
 
 ```sh
 reylo db push
@@ -324,7 +329,7 @@ reylo db push --force
 
 ### `reset`
 
-Rebuilds your development database from your migrations:
+Rebuilds your development database from your migrations ([details](/migrate/cli#reset)):
 
 ```sh
 reylo db reset
@@ -332,7 +337,7 @@ reylo db reset
 
 ### `wipe`
 
-Deletes every row, keeping the schema and the history:
+Deletes every row while keeping the schema and migration history ([details](/migrate/cli#wipe)):
 
 ```sh
 reylo db wipe
@@ -340,17 +345,28 @@ reylo db wipe
 
 ### `introspect`
 
-Prints your database's schema as SQL:
+Prints your database's schema as SQL ([details](/migrate/cli#introspect)):
 
 ```sh
 reylo db introspect
 reylo db introspect --schema app
 ```
 
-<Rust>
 ## `reylo generate`
 
-Writes each `.sql` file's module for a language, as [`#[reylo::query]`](/rust#codegen) does for Rust.
+Writes every query into one TypeScript file ([Codegen](/typescript#codegen)):
+
+```terminal
+$ npx reylo generate typescript 'src/queries/**/*.sql' --out src/queries.ts
+✓ Wrote src/queries.ts
+```
+
+<Rust>
+For Rust, name the `rust-sqlx` generator ([Codegen](/rust#codegen)):
+
+```sh
+reylo generate rust-sqlx --out src/queries.rs
+```
 
 </Rust>
 
