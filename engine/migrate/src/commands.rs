@@ -962,7 +962,7 @@ fn describe_diff(label_a: &str, a: &[String], label_b: &str, b: &[String]) -> Ve
     if more > 0 {
         changes.push(format!("    … and {more} more"));
     }
-    [String::new(), paint("dim", &format!("    --- {label_a}")), paint("dim", &format!("    +++ {label_b}"))].into_iter().chain(changes).chain([String::new()]).collect()
+    [paint("dim", &format!("    --- {label_a}")), paint("dim", &format!("    +++ {label_b}"))].into_iter().chain(changes).collect()
 }
 
 /// One side of a diff without the privileges an object it adds or drops has by default (Postgres's
@@ -1520,7 +1520,6 @@ pub struct Problem {
     pub sql: Option<String>,
     pub notes: Vec<String>,
     pub fixes: Vec<(String, Vec<String>)>,
-    fixed: bool,
     /// Whether it is the lock's drafts, which some commands pass over.
     drafts: bool,
     /// What each command it suggests states, without `--blocking`: for `migrate new` to try, and to
@@ -1533,7 +1532,7 @@ pub struct Problem {
 
 impl Problem {
     fn new(code: &'static str, title: impl Into<String>) -> Problem {
-        Problem { code, title: title.into(), lines: vec![], detail: vec![], sql: None, notes: vec![], fixes: vec![], fixed: false, drafts: false, readings: vec![], hazards: vec![] }
+        Problem { code, title: title.into(), lines: vec![], detail: vec![], sql: None, notes: vec![], fixes: vec![], drafts: false, readings: vec![], hazards: vec![] }
     }
 
     /// The refusal as `--json` gives it.
@@ -1559,12 +1558,10 @@ impl Problem {
         self.drafts
     }
 
-    /// SQL under the heading, set off by blank lines: what differs, never a fix to run.
+    /// SQL under the heading, indented: what differs, never a fix to run.
     fn sql(mut self, sql: &str) -> Problem {
         self.sql = Some(sql.trim_end().to_string());
-        self.lines.push(String::new());
         self.lines.extend(sql.trim_end().lines().map(|l| format!("    {l}")));
-        self.lines.push(String::new());
         self
     }
 
@@ -1576,13 +1573,17 @@ impl Problem {
 
     /// What to do, then each command that does it on a line of its own.
     fn fix(mut self, what: impl AsRef<str>, commands: &[&str]) -> Problem {
-        if !self.fixed && self.lines.last().is_none_or(|l| !l.is_empty()) {
-            self.lines.push(String::new());
-        }
-        self.fixed = true;
         self.fixes.push((what.as_ref().to_string(), commands.iter().map(|c| c.to_string()).collect()));
         self.lines.push(paint("dim", &format!("  {}:", what.as_ref())));
         self.lines.extend(commands.iter().map(|c| format!("    {}", paint("cyan", c))));
+        self
+    }
+
+    /// A lead and the flag it names, for the command another lead gives: printed as `fix` prints a
+    /// command, and no fix of its own, since a flag alone runs nothing.
+    fn hint(mut self, what: impl AsRef<str>, flag: &str) -> Problem {
+        self.lines.push(paint("dim", &format!("  {}:", what.as_ref())));
+        self.lines.push(format!("    {}", paint("cyan", flag)));
         self
     }
 
@@ -1594,8 +1595,9 @@ impl Problem {
         self.fix(what, &[&command])
     }
 
+    /// Lines under the heading, which a refusal writes with no empty line among them.
     fn lines(mut self, lines: impl IntoIterator<Item = String>) -> Problem {
-        let lines: Vec<String> = lines.into_iter().collect();
+        let lines: Vec<String> = lines.into_iter().filter(|l| !l.is_empty()).collect();
         self.detail.extend(lines.iter().cloned());
         self.lines.extend(lines);
         self
@@ -2419,7 +2421,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
                 Some(last) => stored_catalog(db, &last.name).await?,
                 None => None,
             } {
-                problem = problem.lines(std::iter::once(String::new()).chain(changed_lines(&stored, &fingerprinted(&live, db.dialect()), db.dialect())).chain([String::new()]));
+                problem = problem.lines(changed_lines(&stored, &fingerprinted(&live, db.dialect()), db.dialect()));
             }
             let problem = problem
                 .fix("If a migration makes this change, record it here, running nothing", &["reylo migrate history push"])
@@ -2592,7 +2594,7 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         sql = plan_text(shadows.db(prefix), target, None).await.unwrap_or_default();
     }
     let mut problem = Problem::new("database-drift", CHANGED_OUTSIDE);
-    problem = if sql.is_empty() { problem.lines(std::iter::once(String::new()).chain(changed_lines(&checkpoint, &live, run.d)).chain([String::new()])) } else { problem.sql(&sql) };
+    problem = if sql.is_empty() { problem.lines(changed_lines(&checkpoint, &live, run.d)) } else { problem.sql(&sql) };
     if !hint.is_empty() {
         problem = problem.fix(format!("{} {} exactly this change: record it here, running nothing", hint.join(" and "), if hint.len() == 1 { "makes" } else { "make" }), &["reylo migrate history push"]);
     } else if let Some((it, rest)) = ahead {
@@ -2818,7 +2820,7 @@ async fn behind_problem(shadows: &mut Shadows<'_>, target: &mut Db, url: &str, r
     };
     let problem = match sql {
         Some(sql) => problem.sql(&sql),
-        None => problem.lines(std::iter::once(String::new()).chain(changed_lines(&made, live, target.dialect())).chain([String::new()])),
+        None => problem.lines(changed_lines(&made, live, target.dialect())),
     };
     let problem = if lost.is_empty() { problem } else { problem.note(format!("Undoing it loses what {} {}.", and_list(&lost), if lost.len() == 1 { "holds" } else { "hold" })) };
     // What `it` writes may have been written here too, with the change: the undo can't take it back,
@@ -3124,7 +3126,7 @@ fn missing_problem(name: &str, ran: &str, dir: &str) -> Problem {
 /// A migration edited after a database ran it.
 fn edited_problem(name: &str, ran: &str, now: &str) -> Problem {
     Problem::new("applied-migration-edited", format!("Migration {name} changed after this database applied it"))
-        .lines(std::iter::once(String::new()).chain(line_diff(ran, now)).chain([String::new()]))
+        .lines(line_diff(ran, now))
         .note("Write the change as a new migration.")
         .fix("Take back the text this database ran", &["reylo migrate history pull"])
         .fix("On a development database, run it again as it now reads", &["reylo migrate dev"])
@@ -5418,7 +5420,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
         let problem = Problem::new("history-push-no-match", "No run of the migrations makes this database's schema").note(closest);
         let problem = match sql {
             Some(sql) => problem.sql(&sql),
-            None => problem.lines(std::iter::once(String::new()).chain(changed_lines(&lines, &live, d)).chain([String::new()])),
+            None => problem.lines(changed_lines(&lines, &live, d)),
         };
         let problem = match unskipped {
             Some(why) => problem.note(why),
@@ -5728,7 +5730,7 @@ async fn status_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
                         if let Some(stored) = stored_catalog(db, &last.name).await? {
                             let lines = changed_lines(&stored, &fingerprinted(&now_lines, db.dialect()), db.dialect());
                             changes = lines.iter().map(|l| l.trim().to_string()).collect();
-                            problem = problem.lines(std::iter::once(String::new()).chain(lines).chain([String::new()]));
+                            problem = problem.lines(lines);
                         }
                     }
                     problems.push(
@@ -6069,7 +6071,7 @@ async fn history_as_it_stands(db: &mut Db, server: &mut Server, opts: &Options) 
     let problem = Problem::new("database-drift", CHANGED_OUTSIDE);
     let problem = match sql {
         Some(sql) => problem.sql(&sql),
-        None => problem.lines(std::iter::once(String::new()).chain(changed_lines(&made, &live, db.dialect())).chain([String::new()])),
+        None => problem.lines(changed_lines(&made, &live, db.dialect())),
     };
     let problem = problem.note("Files written from its history wouldn't make it either.");
     let schema = opts.schema_exists().then(|| shown(&opts.schema));
@@ -6998,16 +7000,14 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String, Option<String>)], 
     // The schema's difference, each guess's lines together; a guess within a guessed table is among
     // its table's.
     let diff = guesses.iter().filter(|g| g.owner.is_none()).flat_map(|g| g.diff.iter().cloned());
-    let mut problem = Problem::new("rename-guess", title).lines([String::new()]).lines(diff);
+    let mut problem = Problem::new("rename-guess", title).lines(diff);
     // What a rename's change of type would lose, which --drop names by the old name.
     let guessed = |name: &str| guesses.iter().any(|g| g.old == name);
     // What it drops whichever way each guess goes: not what a renamed table drops, which its
     // change says.
     let others: Vec<(String, String)> = drops.iter().filter(|(_, n, _)| !guessed(n) && outside.contains(n)).map(|(k, n, _)| (k.clone(), n.clone())).collect();
     if !others.is_empty() {
-        problem = problem.lines([String::new()]).note(if others.len() == 1 { format!("It also drops {} and its data.", drop_phrase(&others)) } else { format!("It also drops {}, with their data.", drop_phrase(&others)) });
-    } else if !narrowed.is_empty() {
-        problem = problem.lines([String::new()]);
+        problem = problem.note(if others.len() == 1 { format!("It also drops {} and its data.", drop_phrase(&others)) } else { format!("It also drops {}, with their data.", drop_phrase(&others)) });
     }
     for (name, why, _) in narrowed {
         problem = problem.note(if guessed(name) { format!("As a rename, {name} {why}.") } else { format!("{name} {why}.") });
@@ -7016,16 +7016,7 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String, Option<String>)], 
     let owned: Vec<(String, Option<String>)> = drops.iter().map(|(_, n, o)| (n.clone(), o.clone())).chain(narrowed.iter().map(|(n, _, o)| (n.clone(), o.clone()))).collect();
     let more: Vec<String> = owned.iter().map(|(n, _)| n.clone()).collect();
     // What each reading holds that its command's --blocking accepts, said before the command.
-    let mut noted = !others.is_empty() || !narrowed.is_empty();
-    let mut hazard = |problem: Problem, lead: &str, r: &Choices| -> Problem {
-        let what = asked.hazards(r);
-        let mut problem = if !what.is_empty() && !noted { problem.lines([String::new()]) } else { problem };
-        noted |= !what.is_empty();
-        for w in what {
-            problem = problem.note(format!("{lead}, it {w}."));
-        }
-        problem
-    };
+    let hazard = |problem: Problem, lead: &str, r: &Choices| -> Problem { asked.hazards(r).iter().fold(problem, |p, w| p.note(format!("{lead}, it {w}."))) };
     if one {
         let renames: Vec<(String, String)> = guesses.iter().map(|g| (g.old.clone(), g.new.clone())).collect();
         let dropped: Vec<String> = guesses.iter().map(|g| g.old.clone()).chain(outside.iter().cloned()).collect();
@@ -7079,12 +7070,11 @@ fn guess_problem(guesses: &[Guess], drops: &[(String, String, Option<String>)], 
     }
     let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
     let lead = "For each, rename it to keep its rows, or drop it and add the new one";
-    problem.lines.extend([String::new(), paint("dim", &format!("  {lead}:"))]);
+    problem.lines.push(paint("dim", &format!("  {lead}:")));
     for (keep, drop) in &rows {
         problem.lines.push(format!("    {}{}   or   {}", paint("cyan", keep), " ".repeat(width - keep.chars().count()), paint("cyan", drop)));
         problem.detail.push(format!("{keep} or {drop}"));
     }
-    problem.fixed = true;
     problem.readings.extend(readings);
     problem.fix("Add the flags you picked to", &[&create_command(asked, stated, &rest, &[])])
 }
@@ -7100,7 +7090,7 @@ fn lock_problem(hazards: &[crate::locks::Hazard], asked: &Asked, choices: &Choic
     let mut problem = Problem::new("blocks-writes", title);
     problem.hazards = hazards.iter().map(|h| h.what.clone()).collect();
     if hazards.len() > 1 {
-        problem = problem.lines([String::new()]).lines(hazards.iter().map(|h| format!("    It {}", h.what))).lines([String::new()]);
+        problem = problem.lines(hazards.iter().map(|h| format!("    It {}", h.what)));
     }
     problem = problem.note("On a table with many rows, the app's writes wait for as long as that takes.");
     if hazards.iter().any(|h| h.what.starts_with("rewrites ")) {
@@ -7193,6 +7183,9 @@ fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, Stri
         stated.drop.extend(gone.iter().map(&display));
     }
     let remade_from = problems.len();
+    let remaking = !remakes.is_empty();
+    // Whether two of the names --drop would need are one, which --drop can't tell apart.
+    let mut ambiguous = false;
     problems.extend(remakes);
     let unnamed: Vec<(&String, String, String)> = narrowed.iter().filter(|(id, _, _)| !named.contains(id)).map(|(id, shown, why)| (id, shown_id(shown), why.clone())).collect();
     if !guesses.is_empty() {
@@ -7215,7 +7208,10 @@ fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, Stri
         let problem = asked.hazards(&r).iter().fold(Problem::new("drops-data", title), |p, w| p.note(format!("It also {w}.")));
         let mut problem = match shared.as_slice() {
             [] => problem.offer(if list.len() == 1 { "To drop it" } else { "To drop them" }, asked, r),
-            [(a, name), (b, _), ..] => problem.note(format!("A {a} and a {b} share the name {name}: make one of the changes in schema.sql and write its migration, then the other.")),
+            [(a, name), (b, _), ..] => {
+                ambiguous = true;
+                problem.note(format!("A {a} and a {b} share the name {name}: make one of the changes in schema.sql and write its migration, then the other."))
+            }
             [_] => unreachable!("a name shared by one"),
         };
         // Where something comes as these go, any of them may be renamed: which became which is
@@ -7240,12 +7236,39 @@ fn drop_problems_of(lost: &[String], shown: &[String], narrowed: &[(String, Stri
         }
         problems.push(problem);
     }
-    for (_, name, why) in &unnamed {
+    // One such column is accepted by its command. Several are each accepted by their flag, which the
+    // last follows with the command that accepts them all, as one run needs them.
+    if let [(_, name, why)] = unnamed.as_slice() {
         let r = reading(&stated, std::slice::from_ref(name), &[]);
         problems.push(asked.hazards(&r).iter().fold(Problem::new("loses-data", format!("Column {name} {why}")), |p, w| p.note(format!("It also {w}."))).offer("To accept that", asked, r));
+    } else if !unnamed.is_empty() {
+        // Each named as --drop takes it for that one alone: as shown, else by as much of its whole
+        // name as tells it apart; where none does, no one command can accept them all.
+        let spell = |id: &String, name: &String| -> Option<String> {
+            // Each part quoted where a dot or another character would split or change it.
+            let quote = |part: &String| if part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$') { part.clone() } else { format!("\"{}\"", part.replace('"', "\"\"")) };
+            let parts: Vec<String> = split_name(&shown_id(id)).iter().map(quote).collect();
+            std::iter::once(name.clone())
+                .chain((0..parts.len()).rev().map(|k| parts[k..].join(".")))
+                .chain(std::iter::once(shown_id(id)))
+                .find(|c| matches!(resolve(&all, c), Ok(hits) if hits.len() == 1 && hits[0] == *id))
+        };
+        let spelled: Vec<Option<String>> = unstated.iter().map(|l| spell(l, &display(l))).chain(unnamed.iter().map(|(id, name, _)| spell(id, name))).collect();
+        let apart = !ambiguous && spelled.iter().all(Option::is_some);
+        let names: Vec<String> = spelled.iter().flatten().cloned().collect();
+        let all = reading(&stated, &names, &[]);
+        for (k, (_, name, why)) in unnamed.iter().enumerate() {
+            let flag = spelled[unstated.len() + k].clone().unwrap_or_else(|| name.clone());
+            let mut problem = Problem::new("loses-data", format!("Column {name} {why}")).hint("To accept that", &format!("--drop {}", shell_word(&flag)));
+            if k + 1 == unnamed.len() && apart {
+                problem = asked.hazards(&all).iter().fold(problem, |p, w| p.note(format!("It also {w}."))).offer("To accept every change", asked, all.clone());
+            }
+            problems.push(problem);
+        }
     }
-    // Where nothing after them names a command, the last table made again does.
-    if problems.len() > remade_from && problems[remade_from..].iter().all(|p| p.fixes.is_empty()) {
+    // Where nothing after them names a command, the last table made again does, where its command
+    // can name all it needs.
+    if remaking && !ambiguous && problems.len() > remade_from && problems[remade_from..].iter().all(|p| p.fixes.is_empty()) {
         let last = problems.pop().expect("a problem");
         problems.push(last.offer(if subject == "migration" { "To write it, dropping the rows" } else { "To drop the rows" }, asked, reading(&stated, &[], &[])));
     }
@@ -10049,6 +10072,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn several_lossy_columns_name_their_flags_and_one_command() {
+        let narrowed: Vec<(String, String, String)> = ["price", "starts"].iter().map(|c| (format!("column public.events.{c}"), format!("column events.{c}"), "loses what it holds".to_string())).collect();
+        let none = |_: &str| None;
+        let nothing = |_: &str| Vec::new();
+        let problems = drop_problems(&[], &[], &narrowed, &[], &none, &nothing, &[], &Choices::default(), &Asked::migration("narrow", &[]));
+        // Each prints its flag, which no structured fix lists as a command; the last gives the one
+        // command that accepts both.
+        assert_eq!(problems.len(), 2);
+        assert!(problems[0].lines.iter().any(|l| l == "    --drop events.price"), "{:?}", problems[0].lines);
+        assert!(problems[0].json().get("fixes").is_none(), "{}", problems[0].json());
+        assert_eq!(problems[1].json()["fixes"], serde_json::json!([{ "what": "To accept every change", "commands": ["reylo migrate new narrow --drop events.price,events.starts"] }]));
+        assert!(!problems.iter().flat_map(|p| &p.lines).any(String::is_empty), "no empty line in a refusal");
+        // Beside two drops --drop can't tell apart, no command is offered that would name them.
+        let (lost, shown) = (["column t.p1".to_string(), "partition t.p1".to_string()], ["column t.p1".to_string(), "partition t.p1".to_string()]);
+        let problems = drop_problems(&lost, &shown, &narrowed, &[], &none, &nothing, &[], &Choices::default(), &Asked::migration("narrow", &[]));
+        assert!(problems.iter().all(|p| p.json().get("fixes").is_none()), "no command to repeat the refusal: {problems:?}");
+        // A name two schemas share is written with its schema.
+        let narrowed: Vec<(String, String, String)> = vec![("column public.events.price".into(), "column events.price".into(), "loses".into()), ("column archive.events.price".into(), "column archive.events.price".into(), "loses".into())];
+        let problems = drop_problems(&[], &[], &narrowed, &[], &none, &nothing, &[], &Choices::default(), &Asked::migration("narrow", &[]));
+        assert!(problems[0].lines.iter().any(|l| l == "    --drop public.events.price"), "{:?}", problems[0].lines);
+        assert_eq!(problems[1].json()["fixes"][0]["commands"], serde_json::json!(["reylo migrate new narrow --drop public.events.price,archive.events.price"]));
+        // A dropped table and a lossy column whose names are one are each named as only it is.
+        let (lost, shown) = (["table archive.events".to_string()], ["table archive.events".to_string()]);
+        let narrowed: Vec<(String, String, String)> = ["events", "starts"].iter().map(|c| (format!("column public.archive.{c}"), format!("column archive.{c}"), "loses".to_string())).collect();
+        let problems = drop_problems(&lost, &shown, &narrowed, &[], &none, &nothing, &[], &Choices::default(), &Asked::migration("narrow", &[]));
+        let fix = problems.iter().find_map(|p| p.json()["fixes"].as_array().and_then(|f| f.iter().find(|f| f["what"] == "To accept every change").cloned())).expect("the command for every change");
+        let command = fix["commands"][0].as_str().unwrap().to_string();
+        let drops = command.split("--drop ").nth(1).unwrap().split(' ').next().unwrap().split(',').map(String::from).collect::<Vec<_>>();
+        let ids: Vec<String> = lost.iter().cloned().chain(narrowed.iter().map(|(id, _, _)| id.clone())).collect();
+        assert!(drops.iter().all(|d| matches!(resolve(&ids, d), Ok(hits) if hits.len() == 1)), "{command}");
+        // A name with a dot in it keeps its quotes.
+        let narrowed: Vec<(String, String, String)> = vec![("column public.events.\"net.price\"".into(), "column events.\"net.price\"".into(), "loses".into()), ("column archive.events.\"net.price\"".into(), "column archive.events.\"net.price\"".into(), "loses".into())];
+        let problems = drop_problems(&[], &[], &narrowed, &[], &none, &nothing, &[], &Choices::default(), &Asked::migration("narrow", &[]));
+        let command = problems[1].json()["fixes"][0]["commands"][0].as_str().expect("the command for every change").to_string();
+        assert!(command.contains(r#"public.events."net.price""#) && command.contains(r#"archive.events."net.price""#), "{command}");
+    }
+
+    #[test]
     fn a_virtual_tables_own_tables_are_left_out_of_its_summary() {
         let lines = |l: &[&str]| -> Vec<String> { l.iter().map(|s| s.to_string()).collect() };
         let before = lines(&["table notes", "column notes.id integer primary key"]);
@@ -10391,7 +10452,7 @@ mod tests {
         let broken = lines(&["function CREATE OR REPLACE FUNCTION public.\"line\nbreak\"()\n RETURNS integer\n LANGUAGE sql\nAS $function$ select 1 $function$"]);
         let escaped = lines(&["function CREATE OR REPLACE FUNCTION public.\"line\\nbreak\"()\n RETURNS integer\n LANGUAGE sql\nAS $function$ select 1 $function$"]);
         assert_eq!(changed_lines(&escaped, &broken, Dialect::Postgres), ["  + function \"line↵break\"() returns integer", "  - function \"line\\nbreak\"() returns integer"]);
-        assert_eq!(describe_diff("this database", &one, "a fresh database", &two), ["", "    --- this database", "    +++ a fresh database", "    ~ function rate() returns integer", ""]);
+        assert_eq!(describe_diff("this database", &one, "a fresh database", &two), ["    --- this database", "    +++ a fresh database", "    ~ function rate() returns integer"]);
     }
 
     #[test]
