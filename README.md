@@ -15,7 +15,7 @@
 </p>
 
 <div align="center">
-  <a href="https://reylo.dev/docs">Read the docs →</a>
+  <a href="https://reylo.dev/docs">Read the docs →</a> · <a href="https://reylo.dev/play">Try it in your browser →</a>
 </div>
 
 <br/>
@@ -50,7 +50,7 @@ const author = await getAuthor.run(db, { id: 1 });
 // { id: number; name: string; post_count: number } | null
 ```
 
-Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) (currently in nightly builds), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
+Reylo is powered by TypeScript [content mappers](https://github.com/microsoft/typescript-go/pull/4712), introduced in [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) (still in beta), which let you dynamically define static types for external file types and integrate them directly into TypeScript compilation.
 
 Reylo is the perfect option for the agent era:
 
@@ -58,7 +58,7 @@ Reylo is the perfect option for the agent era:
 - 🌵 **DRY** — no redundant hand-written types
 - 🎯 **Checked against your database** — a misspelled column is a type error
 - 🤖 **Agent-friendly** — DRY code is more maintainable for agents
-- 🧩 **Postgres, MySQL and SQLite** — Neon, PlanetScale, Cloudflare D1, Turso and more
+- 🧩 **Postgres, MySQL, SQLite and ClickHouse** — Neon, PlanetScale, Cloudflare D1, Turso and more
 - 🔌 **Bring your own driver** — `pg`, postgres.js, `mysql2`, `better-sqlite3` and [more](#supported-drivers)
 - ⚡ **No codegen** — no generated files, no watcher
 
@@ -66,9 +66,9 @@ Reylo is the perfect option for the agent era:
 
 To install Reylo, you'll need:
 
-- **TypeScript 7.1 (currently in nightly builds).** The first release with content mappers. The `tsconfig.json` entry below needs a nightly from 2026-11-12 or later.
+- **TypeScript 7.1 (still in beta).** The first release with content mappers. Install it with `npm install -D typescript@next`.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.38 or later, or a SQLite file: Reylo reads your current schema from it.
+- **A running dev database.** Postgres, MySQL 8.0.38 or later, ClickHouse 25.11 or later (in preview), or a SQLite file: Reylo reads your current schema from it.
 
 Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
@@ -111,7 +111,7 @@ To make `.sql` imports work at run time too, load Reylo where your code runs. On
 node --env-file=.env --import reylo/register main.ts
 ```
 
-For Bun, Nub, Vite, Next.js, esbuild, Rolldown, Rollup, webpack, Rspack, Cloudflare Workers and Jest, add [the plugin for your setup](https://reylo.dev/#plugins), or copy its complete [example project](https://github.com/reylosql/reylo/tree/main/examples). To see the types as you type, set up [your editor](https://reylo.dev/#editors).
+For Bun, Nub, Vite, Next.js, esbuild, Rolldown, Rollup, webpack, Rspack, Cloudflare Workers and Jest, add [the plugin for your setup](https://reylo.dev/typescript#plugins), or copy its complete [example project](https://github.com/reylosql/reylo/tree/main/examples). To see the types as you type, set up [your editor](https://reylo.dev/typescript#editors).
 
 To give your coding agent Reylo's rules for writing and running queries, install its skill:
 
@@ -146,7 +146,7 @@ It resolves to the rows, shaped by how many the query can return:
 | An `insert`, `update` or `delete` without `returning` | `void` |
 | Anything else | `Row[]` |
 
-An imported query also has `.runSync()`, `.try()`, `.with()`, `.sql`, `.raw` and `.source` ([Usage](https://reylo.dev/#usage)). Every query Reylo runs is published on Node's tracing channel `reylo:query`, for a tracer or a logger to subscribe to ([Tracing](https://reylo.dev/#tracing)).
+An imported query also has `.runSync()`, `.try()`, `.readOnly`, `.with()`, `.sql`, `.raw` and `.source` ([Usage](https://reylo.dev/typescript#usage)). Every query Reylo runs is published on Node's tracing channel `reylo:query`, for a tracer or a logger to subscribe to ([Observability](https://reylo.dev/typescript#observability)).
 
 ## What Reylo infers
 
@@ -157,7 +157,7 @@ To type a query, Reylo has your dev database prepare it, without running it, and
 - **Unions** — an enum, or a column whose check constraint lists its values, is a union of them.
 - **JSON** — JSON the query builds, and a JSON column with a JSON Schema check, keep their shape.
 
-Each has examples in [Inference](https://reylo.dev/#inference).
+Each has examples in [Inference](https://reylo.dev/inference).
 
 ## Supported drivers
 
@@ -166,10 +166,11 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `slonik`, `@vercel/postgres`, Drizzle Postgres
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
 - **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, SQLite Wasm, sql.js, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
+- **ClickHouse** (preview) — `@clickhouse/client`, `@clickhouse/client-web`
 
 ## Documentation
 
-[reylo.dev](https://reylo.dev) covers the rest: every plugin and editor, configuration, errors, each database's data types and edge cases, and advanced examples. Agents can read it all as Markdown at [reylo.dev/llms.txt](https://reylo.dev/llms.txt). To move a Prisma project's queries to Reylo, see [Migrating from Prisma](https://reylo.dev/prisma).
+[reylo.dev/docs](https://reylo.dev/docs) covers the rest: every plugin and editor, configuration, errors, each database's data types and edge cases, and [Reylo Migrate](https://reylo.dev/migrate/docs) for SQL-first schema migrations. Agents can read it all as Markdown at [reylo.dev/llms.txt](https://reylo.dev/llms.txt), or fetch any page with `Accept: text/markdown`. To move a Prisma project's queries to Reylo, see [Migrating from Prisma](https://reylo.dev/prisma).
 
 ## License
 

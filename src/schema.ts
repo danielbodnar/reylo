@@ -11,7 +11,7 @@ import { bareName, isMysqlSet, nestsAnyDeep, schemaOf, type EngineType, type Jso
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
 type Schema = { [key: string]: unknown };
 type Analysis = {
   /** The prose written in comments before the statement, which describes both schemas. */
@@ -22,10 +22,10 @@ type Analysis = {
   value?: boolean;
 };
 
-/** The schema admitting null as well: a bare `type` gets `"null"` beside it, anything else an `anyOf` with null. */
+/** The schema admitting null as well: a bare `type` gets `"null"` beside it, unless it is `"null"` already, and anything else an `anyOf` with null. */
 function nullable(schema: Schema | JsonSchema): Schema | JsonSchema {
   if (schema === true || (typeof schema === "object" && Object.keys(schema).length === 0)) return schema;
-  if (typeof schema === "object" && Object.keys(schema).length === 1 && typeof schema.type === "string") return { type: [schema.type, "null"] };
+  if (typeof schema === "object" && Object.keys(schema).length === 1 && typeof schema.type === "string") return schema.type === "null" ? schema : { type: [schema.type, "null"] };
   return { anyOf: [schema, { type: "null" }] };
 }
 
@@ -90,6 +90,9 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
       const text = [...(t.nan ? ["NaN"] : []), ...(t.infinity ? ["Infinity", "-Infinity"] : [])];
       return dialect === "postgres" && inUnion && text.length ? { anyOf: [number, { enum: text }] } : number;
     }
+    // MySQL writes a BIT inside a document as its bytes in base64 (`base64:type16:AQ==`), at any
+    // width: no truth value for a BIT(1), and no hex for a wider one (src/render.ts).
+    if (dialect === "mysql" && name === "bit") return { type: "string" };
     if (kind === "bytes") return { type: "string", format: "hex" };
     // Postgres's own interval text: the run time converts a column's interval, never one inside a document.
     if (t.kind === "duration" && dialect === "postgres") return { type: "string", description: "pg type interval" };
@@ -105,7 +108,8 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     // A MySQL TINYINT(1) or BIT(1) column's parameter takes the truth value its rows return, or the integer it stores.
     if (dialect === "mysql" && kind === "bool" && t.kind !== "boolean") return { anyOf: [{ type: "boolean" }, { type: "integer", format: "int32" }] };
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
-    if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
+    // A ClickHouse parameter is written by Reylo, which takes a number or a BigInt and no digits.
+    if (kind === "int8") return dialect === "clickhouse" ? kindSchema("int8", t, dialect) : { type: ["integer", "string"], format: "int64" };
     if (kind === "decimal") return { type: "string", format: "decimal" };
   }
   // A SET inside a document is its text, its members joined by commas.
@@ -125,7 +129,7 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
     case "time": return t.offset ? { type: "string", description: `pg type ${name}` } : { type: "string", description: "a time of day without a time zone (10:00:00.5)" };
     case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };
-    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : "pg"} type ${name || t.kind}` };
+    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : dialect === "clickhouse" ? "ClickHouse" : "pg"} type ${name || t.kind}` };
   }
 }
 
@@ -142,8 +146,8 @@ function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
     // A SQLite INTEGER is 64 bits wide, and so is an unsigned 32-bit integer's range past int4's.
     case "int": return t.kind === "integer" && t.bits <= 32 && !(t.bits === 32 && t.unsigned) && dialect !== "sqlite" ? { type: "integer", format: "int32" } : { type: "integer", format: "int64" };
     case "float": return t.kind === "float" && t.exponent_bits <= 8 ? { type: "number", format: "float" } : { type: "number", format: "double" };
-    // A BigInt, as the JSON integer it is.
-    case "int8": return { type: "integer", format: "int64" };
+    // A BigInt, as the JSON integer it is: one of more than 64 bits, as ClickHouse has, is of no named format.
+    case "int8": return t.kind === "integer" && t.bits > 64 ? { type: "integer" } : { type: "integer", format: "int64" };
     case "decimal":
     case "money": return { type: "string", format: "decimal" };
     case "timestamptz": return { type: "string", format: "date-time" };
@@ -302,7 +306,7 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
     case "enum": {
       const base = typeSchema(t.type, dialect, input, inJson, inRow, undefined, codecs);
       if (typeof base !== "object" || base === null) return base;
-      const values = t.values.map((v): unknown => {
+      const values = t.values.map(({ value: v }): unknown => {
         if (base.type === "boolean") return v === "true";
         if (base.type === "integer" || base.type === "number") return exactNumber(v, base.type === "integer");
         if (base.type === "string" && t.type.kind === "text") return v;
@@ -340,9 +344,10 @@ function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: bo
         if (!kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
       }
       // A result's elements may be null unless the statement shows they are not; a parameter's
-      // are strict, but a structured parameter's member keeps them (src/render.ts).
+      // are strict, but a structured parameter's member keeps them (src/render.ts). A ClickHouse
+      // array's type says whether an element may be null, a parameter's too.
       const each = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
-      const items = (input ? inRow : t.element.nullable) ? nullable(each) : each;
+      const items = (input && dialect !== "clickhouse" ? inRow : t.element.nullable) ? nullable(each) : each;
       // An array the project lets nest holds its elements, or arrays of them at any depth.
       return { type: "array", items: !input && nestsAnyDeep(t) ? { anyOf: [items, { type: "array" }] } : items };
     }

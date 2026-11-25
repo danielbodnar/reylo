@@ -5,7 +5,8 @@
 // project file names under `env` (by default `.env.local`, then `.env`, beside it), and a `${VAR}`
 // in a URL is replaced from that. A `$(command)` in `direct_url` is replaced by what the command
 // prints, so that a secret can come from a password manager or a cloud's token command instead of
-// a file. The URL's scheme names the dialect. The connection is
+// a file. The URL's scheme names the dialect. The connection is the shadow database of
+// `reylo migrate deploy --dry-run -- <command>` inside that command, else
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
@@ -19,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
 import { DECIMAL_LIBRARIES, type Codecs, type DecimalLibrary, type Library } from "./codecs.ts";
 
-export type Dialect = "postgres" | "sqlite" | "mysql";
+export type Dialect = "postgres" | "sqlite" | "mysql" | "clickhouse";
 
 /** What the engine reads out of `.reylo.yaml`: the keys the library looks at. */
 export type ProjectFile = {
@@ -51,7 +52,7 @@ export type ResolvedProject = {
   sqlcommenter: boolean;
   /** The type `.run()` gives each family of values where the file's `js.codecs` names one (src/codecs.ts). */
   codecs: Codecs;
-  /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
+  /** The connection the type check uses: a dry run's shadow inside its command, else `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
   url: string | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
   urlSource: string;
@@ -134,7 +135,7 @@ function cachedDialects(cache: string): Dialect[] {
   for (const name of names.slice(0, CACHED_READ)) {
     try {
       const { dialect } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { dialect?: unknown };
-      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite") found.add(dialect);
+      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite" || dialect === "clickhouse") found.add(dialect);
     } catch {}
     if (found.size > 1) break;
   }
@@ -147,6 +148,9 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
+  // ClickHouse is named by the URL of its HTTP interface, as an app gives it to @clickhouse/client,
+  // after `clickhouse+`: a bare http:// or https:// names no one database.
+  if (scheme === "clickhouse+http" || scheme === "clickhouse+https") return "clickhouse";
   return undefined;
 }
 
@@ -364,6 +368,9 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
   return outcome;
 }
 
+/** The variable `reylo migrate deploy --dry-run -- <command>` names its shadow database in, for the command's analyses alone. */
+export const ANALYSIS_URL = "REYLO_ANALYSIS_URL";
+
 /**
  * The project `projectDir` belongs to. `engine` reads the project file: any database's engine does
  * (src/engine.ts, `anyEngine`), and where reylo has none to run a project file is the project's error.
@@ -417,7 +424,11 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   const missingUrl = urlAlone
     ? `No database URL: ${shown(file!)} sets url, which Reylo does not read; set direct_url there, or DATABASE_URL in the environment, .env.local or .env.`
     : `No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in ${file ? shown(file) : PROJECT_FILE}.`;
-  const written = options.urlGiven ? undefined : config.direct_url;
+  // Inside `reylo migrate deploy --dry-run -- <command>`, every analysis the command runs reads the
+  // shadow database it runs on, which it names in REYLO_ANALYSIS_URL. The migrations' own commands
+  // never read it, so a deploy inside that command still reaches the project's database.
+  const shadow = options.urlGiven ? undefined : env[ANALYSIS_URL] || undefined;
+  const written = options.urlGiven || shadow ? undefined : config.direct_url;
   let refreshUrl: (() => string | undefined) | undefined;
   if (written !== undefined) {
     const missing: string[] = [];
@@ -477,13 +488,16 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
         }
       } else url = texts.join("");
     }
+  } else if (shadow) {
+    url = shadow;
+    urlSource = "the shadow database of reylo migrate deploy --dry-run";
   } else if (!options.urlGiven) {
     const hit = lookup("DATABASE_URL");
     url = hit?.value;
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse clickhouse+http:// or clickhouse+https://, the URL of its HTTP interface.`;
   const unusable = url && dialect === "sqlite" ? sqliteUrlProblem(url) : undefined;
   if (unusable) error ??= `Cannot read the SQLite URL ${url} (${urlSource}): ${unusable}.`;
   // Either name, created or removed, changes the project.

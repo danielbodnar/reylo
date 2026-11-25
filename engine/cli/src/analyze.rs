@@ -29,8 +29,9 @@ Formats:
   typescript                Its parameters and what .run() resolves to, as TypeScript types
   rust                      Its module for sqlx, as reylo generate rust-sqlx writes it
 
-The database is --url, else the project file's direct_url, else DATABASE_URL, from the
-environment or the .env files; a relative SQLite path in --url is read from the working
+The database is --url, else, run by reylo migrate deploy --dry-run -- <command>, its shadow
+database, else the project file's direct_url, else DATABASE_URL, from the environment or the
+.env files; a relative SQLite path in --url is read from the working
 directory, one in the project's URL from the project's root. A statement the engine cannot
 analyze is printed with one diagnostic that says why. Exits with 1 when any statement has a
 diagnostic, and with 2 when the database cannot be reached or the statements cannot be read.";
@@ -74,6 +75,7 @@ pub(crate) enum Session {
     Postgres(reylo_engine::postgres::Session),
     Mysql(reylo_engine::mysql::Session),
     Sqlite(reylo_engine::sqlite::Session),
+    Clickhouse(reylo_engine::clickhouse::Session),
 }
 
 impl Session {
@@ -82,6 +84,7 @@ impl Session {
         Ok(match dialect {
             "postgres" => Session::Postgres(reylo_engine::postgres::Session::open(url).await?),
             "mysql" => Session::Mysql(reylo_engine::mysql::Session::open(url).await?),
+            "clickhouse" => Session::Clickhouse(reylo_engine::clickhouse::Session::open(url)?),
             _ => Session::Sqlite(reylo_engine::sqlite::Session::open(&project::sqlite_path(url, base).map_err(|why| Failure::Error(format!("Cannot read the SQLite URL {url}: {why}.")))?)?),
         })
     }
@@ -91,6 +94,7 @@ impl Session {
             Session::Postgres(s) => &s.version,
             Session::Mysql(s) => &s.version,
             Session::Sqlite(s) => &s.version,
+            Session::Clickhouse(s) => &s.version,
         }
     }
 
@@ -100,16 +104,17 @@ impl Session {
             Session::Postgres(s) => s.forget(),
             Session::Mysql(s) => s.forget(),
             Session::Sqlite(s) => s.forget(),
+            Session::Clickhouse(s) => s.forget(),
         }
     }
 
     /// Has the server give up on a lock after `seconds`. SQLite's analysis takes none.
-    /// Sets the session up for text an editor sends on its own: giving up on a lock after `seconds`, and read-only where parsing a statement can run code, as on Postgres. A SQLite file is opened read-only already.
+    /// Sets the session up for text an editor sends on its own: giving up on a lock after `seconds`, and read-only where parsing a statement can run code, as on Postgres. A SQLite file is opened read-only already, and ClickHouse's HTTP interface keeps no session: its description of a statement takes no lock and writes nothing.
     pub(crate) async fn for_an_editor(&mut self, seconds: u32) -> Result<(), String> {
         match self {
             Session::Postgres(s) => s.for_an_editor(seconds).await,
             Session::Mysql(s) => s.for_an_editor(seconds).await,
-            Session::Sqlite(_) => Ok(()),
+            Session::Sqlite(_) | Session::Clickhouse(_) => Ok(()),
         }
     }
 
@@ -118,6 +123,7 @@ impl Session {
             Session::Postgres(s) => s.analyze(sql).await,
             Session::Mysql(s) => s.analyze(sql).await,
             Session::Sqlite(s) => s.analyze(sql),
+            Session::Clickhouse(s) => s.analyze(sql),
         }
     }
 }
@@ -178,13 +184,13 @@ pub fn run(args: &[String]) -> i32 {
     }
     let given = url.is_some();
     // The URL, and where it came from, which a message about it names as the type check does.
-    let (url, source) = match url.map(|url| Ok(Some((url, "--url".to_string())))).unwrap_or_else(|| project.type_check_url()) {
+    let (url, source) = match url.map(|url| Ok(Some((url, "--url".to_string())))).unwrap_or_else(|| project.analysis_url()) {
         Ok(Some((url, source))) if !url.is_empty() => (url, source),
         Ok(_) => return fail(&project.missing_url()),
         Err(message) => return fail(&message),
     };
     let Some(dialect) = project::dialect_of(&url) else {
-        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs."));
+        return fail(&format!("Cannot tell the database from the URL ({source}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs, and for ClickHouse clickhouse+http:// or clickhouse+https://, the URL of its HTTP interface."));
     };
     // A relative SQLite path in a URL typed on the command line is the shell's, from the working
     // directory; one in the project's URL is from the project's root, as the type check reads it.
@@ -193,6 +199,10 @@ pub fn run(args: &[String]) -> i32 {
         if let Err(why) = project::sqlite_path(&url, &base) {
             return fail(&format!("Cannot read the SQLite URL {url} ({source}): {why}."));
         }
+    }
+    // The Rust crate runs its queries on sqlx, which has no ClickHouse driver.
+    if dialect == "clickhouse" && format == Format::Rust {
+        return fail("Cannot print a Rust module for ClickHouse: the Rust crate runs its queries on sqlx, which has no ClickHouse driver. Its types print with --format typescript.");
     }
     let settings = Settings {
         codecs: serde_json::to_value(&project.config.js.codecs).unwrap_or(Value::Null),
@@ -220,7 +230,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
         Ok(session) => session,
         // A command in `direct_url` that makes a short-lived token is run again once the token is
         // refused, as the type check runs it again.
-        Err(Failure::Refused(_)) if !given && project.url_runs_command() => match project.type_check_url() {
+        Err(Failure::Refused(_)) if !given && project.url_runs_command() => match project.analysis_url() {
             Ok(Some((fresh, _))) => match Session::open(dialect, &fresh, base).await {
                 Ok(session) => session,
                 Err(failure) => return fail(&failure.to_string()),
@@ -234,6 +244,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
     let engine_dialect = match dialect {
         "postgres" => Dialect::Postgres,
         "mysql" => Dialect::Mysql,
+        "clickhouse" => Dialect::Clickhouse,
         _ => Dialect::Sqlite,
     };
     let mut flagged = false;

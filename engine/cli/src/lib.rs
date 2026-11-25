@@ -47,8 +47,8 @@ Commands:
     --url <url>            The database, in place of the project's
     --format <format>      json, the default, yaml or typescript
     --format rust          Print each statement's Rust module for sqlx
-  generate <generator>     Write each .sql file's module for a language
-    --out <file>           Write every module into one file
+  generate <generator>     Write every .sql file's module into one file
+    --out <file>           The file to write
   migrate <command>        Write, check and run your migrations
   db <command>             Push, reset, wipe or print a development database
   run <sql>                Run SQL as written, recording nothing
@@ -62,21 +62,24 @@ Flags:
   -h, --help               Print this help
   --version                Print the version";
 
-const GENERATE_USAGE: &str = "Usage: reylo generate <generator> [<file.sql | directory | 'glob'> ...] [--out <file>]
+const GENERATE_USAGE: &str = "Usage: reylo generate <generator> [<file.sql | directory | 'glob'> ...] --out <file>
 
-Writes each .sql file's module, typed by the project's database, as reylo analyze reads it.
+Writes every .sql file's module into one file, typed by the project's database, as reylo analyze
+reads it.
 
 Generators:
+  typescript                Each query as an export, with .run() and its types, for the
+                            project's reylo dependency; run by the reylo package's command
   rust-sqlx                 Query, Row and .run() on sqlx, as #[reylo::query] writes them, for
                             the crate's reylo dependency
 
-Each .sql file's module is written beside it, get_user.sql as get_user.rs; with --out, every
-module goes into one file, each directory under the inputs a module of its own. A directory is
-searched for .sql files, and a glob in quotes is expanded by Reylo; with none, every .sql file
-under the crate's src/, from the nearest Cargo.toml, or at a workspace's root under each member's.
-A module checks as the crate compiles that its .sql file reads as it did, so a query edited since
-fails to compile until it is written again. Exits with 1 when any statement fails, writing none.
-TypeScript needs no generator: the type check reads each query itself.";
+Each module is named after its file, whatever directory it is in: get_user.sql is getUser in
+TypeScript and get_user in Rust, and two files with one name fail. A directory is searched for
+.sql files, and a glob in quotes is expanded by Reylo. typescript reads the paths it is given;
+rust-sqlx with none reads every .sql file under the crate's src/, from the nearest Cargo.toml, or
+at a workspace's root under each member's. A Rust module checks as the crate compiles that its .sql
+file reads as it did, so a query edited since fails to compile until it is written again. Exits
+with 1 when any statement fails, writing nothing.";
 
 const RUN_USAGE: &str = "Usage: reylo run \"<sql>\"… [--file <path>]…
 
@@ -90,12 +93,13 @@ Commands:
   init                     Start from this database
     --schema <name>        A schema to read; repeat for more (Postgres; all by default)
   new <name>               Write the next migration, from schema.sql or this database
-    --drop <names>         Accept what it drops: tables and columns
+    --drop <names>         Accept what it drops: tables, columns and partitions
     --rename <old>=<new>   Say a table or column was renamed
     --blocking             Accept a statement that blocks writes while it reads every row
-  dev                      Apply all unapplied migrations and regenerate the lockfile
+  dev                      Apply pending migrations, rewinding if needed (may drop data), and write the lockfile
   deploy                   Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
+      -- <command>         Then run the command, such as your build, typed against that shadow
   status                   Check that this database and the files are in step
   lock                     Write the lock from this database's history
   history push             Record the migrations this database's schema has
@@ -110,7 +114,7 @@ const DB_USAGE: &str = "Usage: reylo db <command> [flags]
 
 Commands:
   push                     Synchronize this database with schema.sql (may be destructive)
-    --drop <names>         Accept what it drops: tables and columns
+    --drop <names>         Accept what it drops: tables, columns and partitions
     --rename <old>=<new>   Say a table or column was renamed
     --force                Accept everything it drops
     --watch                Push again on each save
@@ -171,6 +175,28 @@ struct Args {
     rest: Vec<String>,
 }
 
+/// The names a `--drop` value lists, split at each comma outside a quoted name, as a name with a
+/// comma in it is written: `public."net.price,usd",tags`.
+fn drop_names(value: &str) -> Vec<String> {
+    let (mut out, mut name, mut quote) = (Vec::new(), String::new(), None::<char>);
+    for ch in value.chars() {
+        match (quote, ch) {
+            (None, ',') => out.push(std::mem::take(&mut name)),
+            (None, '"' | '`') => {
+                quote = Some(ch);
+                name.push(ch);
+            }
+            (Some(q), _) if ch == q => {
+                quote = None;
+                name.push(ch);
+            }
+            _ => name.push(ch),
+        }
+    }
+    out.push(name);
+    out.into_iter().map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect()
+}
+
 fn parse(args: &[String]) -> Result<Args, String> {
     let mut out = Args::default();
     let mut k = 0;
@@ -195,7 +221,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--schema" => out.schemas.push(value()?),
             "--file" | "-f" => out.files.push(value()?),
-            "--drop" => out.drops.extend(value()?.split(',').map(str::trim).filter(|n| !n.is_empty()).map(String::from)),
+            "--drop" => out.drops.extend(drop_names(&value()?)),
             "--rename" => {
                 let v = value()?;
                 let (old, new) = v.split_once('=').ok_or_else(|| format!("--rename takes <old name>=<new name>, a table as users=accounts or a column as users.bio=about, not {v}"))?;
@@ -257,7 +283,7 @@ fn eprint(line: &str) {
 /// A command that isn't one, said on stderr with exit 2; with `--json`, as the one JSON object every
 /// command prints, `extra` (the usage) left out.
 fn usage_error(group: &str, args: &[String], message: &str, extra: &str) -> i32 {
-    if args.iter().any(|a| a == "--json") {
+    if args.iter().take_while(|a| *a != "--").any(|a| a == "--json") {
         let named: Vec<&str> = args.iter().take_while(|a| !a.starts_with('-')).map(String::as_str).collect();
         let out = serde_json::json!({ "command": format!("reylo {group} {}", named.join(" ")).trim_end(), "ok": false, "exit": 2, "error": message, "log": [] });
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
@@ -272,7 +298,7 @@ fn usage_error(group: &str, args: &[String], message: &str, extra: &str) -> i32 
 fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
     let result = group_command_checked(group, args);
     match result {
-        Err(e) if args.iter().any(|a| a == "--json") => {
+        Err(e) if args.iter().take_while(|a| *a != "--").any(|a| a == "--json") => {
             let named: Vec<&str> = args.iter().take_while(|a| !a.starts_with('-')).map(String::as_str).collect();
             let out = serde_json::json!({ "command": format!("reylo {group} {}", named.join(" ")).trim_end(), "ok": false, "exit": 1, "error": e, "log": [] });
             println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
@@ -283,7 +309,7 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
 }
 
 fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
-    if args.is_empty() || args[0] == "help" || args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
+    if args.is_empty() || args[0] == "help" || args.iter().take_while(|a| *a != "--").any(|a| matches!(a.as_str(), "--help" | "-h")) {
         println!("{}", painted_usage(group));
         return Ok(0);
     }
@@ -310,7 +336,12 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
         return Ok(usage_error(group, args, &format!("reylo {group} has no command {word} (reylo {group} --help lists them)"), ""));
     }
     let command = command.as_str();
-    let parsed = parse(&args[words..])?;
+    // What follows `--` is a command to run, not flags: `deploy --dry-run -- next build`.
+    let (flags, then) = match args[words..].iter().position(|a| a == "--") {
+        Some(k) => (&args[words..words + k], Some(&args[words + k + 1..])),
+        None => (&args[words..], None),
+    };
+    let parsed = parse(flags)?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     // What a command doesn't take is refused, never passed over: deploy --dev must not run deploy, and
     // db reset --force must not seem to have overridden anything.
@@ -327,6 +358,17 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
         return refused(&format!("--{flag}"));
     }
     let json = has("json");
+    if let Some(then) = then {
+        if command != "migrate deploy" || !has("dry-run") {
+            return Ok(usage_error(group, args, &format!("reylo {group} {short} runs no command after --: reylo migrate deploy --dry-run -- <command> does"), ""));
+        }
+        if then.is_empty() {
+            return Ok(usage_error(group, args, "-- needs the command to run on the shadow database, as reylo migrate deploy --dry-run -- next build", ""));
+        }
+        if json {
+            return Ok(usage_error(group, args, "reylo migrate deploy --dry-run -- <command> prints the command's output, so it can't print one JSON object", ""));
+        }
+    }
     if json && has("watch") {
         return Ok(usage_error(group, args, "reylo db push --watch runs until it's stopped, so it can't print one JSON object", ""));
     }
@@ -348,7 +390,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     if !json {
         let mut sql = None;
         // Introspect's stdout is its SQL alone, for a redirect: what it says goes to stderr.
-        let code = if command == "db introspect" { run_group(command, &parsed, &mut eprint, &mut sql) } else { run_group(command, &parsed, &mut print, &mut sql) };
+        let code = if command == "db introspect" { run_group(command, &parsed, then, &mut eprint, &mut sql) } else { run_group(command, &parsed, then, &mut print, &mut sql) };
         // The schema alone on stdout, so that it can be saved with a redirect.
         if let Some(sql) = sql {
             print!("{sql}");
@@ -362,7 +404,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     reylo_migrate::commands::set_json(true);
     let mut lines: Vec<String> = Vec::new();
     let mut sql = None;
-    let outcome = run_group(command, &parsed, &mut |l: &str| lines.push(l.to_string()), &mut sql);
+    let outcome = run_group(command, &parsed, None, &mut |l: &str| lines.push(l.to_string()), &mut sql);
     let named = if command == "migrate deploy" && has("dry-run") { "migrate deploy --dry-run".to_string() } else { command.to_string() };
     let mut out = serde_json::json!({ "command": format!("reylo {named}") });
     let (code, error) = match outcome {
@@ -389,9 +431,10 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     Ok(code)
 }
 
-/// Runs one command of `reylo migrate` or `reylo db`, its flags checked; `db introspect`'s SQL goes to
-/// `sql`, for the caller to print.
-fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>, sql: &mut Option<String>) -> Result<i32, String> {
+/// Runs one command of `reylo migrate` or `reylo db`, its flags checked, and `then`, the command after
+/// `--` that `deploy --dry-run` runs on its shadow; `db introspect`'s SQL goes to `sql`, for the caller
+/// to print.
+fn run_group(command: &str, parsed: &Args, then: Option<&[String]>, log: reylo_migrate::commands::Log<'_>, sql: &mut Option<String>) -> Result<i32, String> {
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     let opts = settings(parsed)?;
     // A run holds a session, which a transaction pooler shares out; `reylo run` holds none.
@@ -425,7 +468,7 @@ fn run_group(command: &str, parsed: &Args, log: reylo_migrate::commands::Log<'_>
             "migrate status" => reylo_migrate::status(&opts, &mut log).await,
             "migrate lock" => reylo_migrate::lock_from_history(&opts, &mut log).await,
             "migrate dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
-            "migrate deploy" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
+            "migrate deploy" if has("dry-run") => reylo_migrate::dry_run_then(&opts, then, &mut log).await,
             "migrate deploy" => reylo_migrate::deploy(&opts, &mut log).await,
             "db push" => {
                 let push = reylo_migrate::Push { choices: reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone(), ..Default::default() }, force: has("force") };
@@ -463,8 +506,16 @@ fn generate_command(args: &[String]) -> i32 {
         return if args.is_empty() { 2 } else { 0 };
     }
     let generator = args[0].as_str();
+    if generator == "typescript" {
+        eprintln!("reylo generate: the typescript generator runs in the project's reylo package: npx reylo generate typescript");
+        return 2;
+    }
     if generator != "rust-sqlx" {
-        eprintln!("reylo generate: no generator {generator}: the one there is is rust-sqlx (reylo generate --help)");
+        eprintln!("reylo generate: no generator {generator}: there are typescript and rust-sqlx (reylo generate --help)");
+        return 2;
+    }
+    if !args[1..].iter().any(|a| a == "--out" || a == "-o" || a.starts_with("--out=")) {
+        eprintln!("reylo generate: name the file to write with --out, as --out src/queries.rs (reylo generate --help)");
         return 2;
     }
     let mut builder = reylo_build::generate::rust_sqlx();
@@ -491,12 +542,13 @@ fn generate_command(args: &[String]) -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
     match builder.run() {
         Ok(written) => {
-            let changed = written.iter().filter(|w| w.changed).count();
-            for file in written.iter().filter(|w| w.changed) {
-                println!("{} Wrote {}", paint("green", "✓"), file.path.strip_prefix(&cwd).unwrap_or(&file.path).display());
-            }
-            if changed < written.len() {
-                println!("{}", paint("dim", &format!("{} unchanged", written.len() - changed)));
+            for file in &written {
+                let path = file.path.strip_prefix(&cwd).unwrap_or(&file.path).display();
+                if file.changed {
+                    println!("{} Wrote {path}", paint("green", "✓"));
+                } else {
+                    println!("{}", paint("dim", &format!("» No change to {path}")));
+                }
             }
             0
         }
@@ -542,8 +594,9 @@ fn engine_command(args: &[String]) -> i32 {
         Some("postgres") => reylo_engine::serve(reylo_engine::postgres::Postgres::default(), call),
         Some("mysql") => reylo_engine::serve(reylo_engine::mysql::Mysql::default(), call),
         Some("sqlite") => reylo_engine::serve(reylo_engine::sqlite::Sqlite::default(), call),
+        Some("clickhouse") => reylo_engine::serve(reylo_engine::clickhouse::Clickhouse::default(), call),
         other => {
-            eprintln!("reylo engine: name a database: postgres, mysql or sqlite{}", other.map(|o| format!(" (not {o})")).unwrap_or_default());
+            eprintln!("reylo engine: name a database: postgres, mysql, sqlite or clickhouse{}", other.map(|o| format!(" (not {o})")).unwrap_or_default());
             return 2;
         }
     }
@@ -597,7 +650,14 @@ pub fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{ci, painted_usage, usage, COMMANDS};
+    use super::{ci, drop_names, painted_usage, usage, COMMANDS};
+
+    #[test]
+    fn a_drop_list_splits_at_commas_outside_quoted_names() {
+        assert_eq!(drop_names(r#"public.events."net.price,usd",archive.events."net.price,usd""#), [r#"public.events."net.price,usd""#, r#"archive.events."net.price,usd""#]);
+        assert_eq!(drop_names("users.bio, tags,,"), ["users.bio", "tags"]);
+        assert_eq!(drop_names("t.`a,b`,t.c"), ["t.`a,b`", "t.c"]);
+    }
 
     #[test]
     fn ci_is_any_value_but_empty_false_or_0() {

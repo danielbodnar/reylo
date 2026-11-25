@@ -108,12 +108,119 @@ pub(crate) enum Ran {
     Waited(Error),
     Failed(Error),
     Partly(Error),
+    /// Failed as `Failed` does, on a row the table already held that breaks a constraint or a
+    /// unique index the statement checked the rows against.
+    Broke(Error, Breach),
+}
+
+/// What a statement found a row breaking: a constraint or a unique index, by the name the server
+/// gave, and the table it is on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Breach {
+    pub kind: Breaks,
+    /// The constraint's name, or the unique index's, or for a NOT NULL with no name the column's.
+    pub name: String,
+    /// The table, schema-qualified where the server said (Postgres), else as the error named it.
+    pub table: String,
+    /// The column a NOT NULL is on, where the server said, unquoted.
+    pub column: Option<String>,
+    /// A query that lists the rows that break it, where the database could say.
+    pub rows: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Breaks {
+    #[default]
+    Check,
+    ForeignKey,
+    Unique,
+    NotNull,
+}
+
+/// A Postgres name in double quotes, which reads as the name whatever it is: a reserved word too.
+pub(crate) fn pg_quoted(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+/// What a Postgres error says of a row that breaks a constraint, by its SQLSTATE: a `check`, a
+/// foreign key, a unique index or a NOT NULL. None for any other error.
+#[cfg(feature = "cli")]
+pub(crate) fn pg_breach(e: &tokio_postgres::Error) -> Option<Breach> {
+    use tokio_postgres::error::SqlState;
+    let d = e.as_db_error()?;
+    let kind = match d.code() {
+        c if *c == SqlState::CHECK_VIOLATION => Breaks::Check,
+        c if *c == SqlState::FOREIGN_KEY_VIOLATION => Breaks::ForeignKey,
+        c if *c == SqlState::UNIQUE_VIOLATION => Breaks::Unique,
+        c if *c == SqlState::NOT_NULL_VIOLATION => Breaks::NotNull,
+        _ => return None,
+    };
+    // A check, a foreign key and a unique index are named by their constraint; a NOT NULL may be
+    // named by its column alone. A domain's check is named by neither as it is in the table.
+    let name = match kind {
+        Breaks::NotNull => d.constraint().or(d.column())?,
+        _ => d.constraint()?,
+    }
+    .to_string();
+    let table = match (d.schema(), d.table()) {
+        (Some(schema), Some(table)) => format!("{}.{}", pg_quoted(schema), pg_quoted(table)),
+        (None, Some(table)) => pg_quoted(table),
+        _ => return None,
+    };
+    Some(Breach { kind, name, table, column: d.column().map(String::from), rows: None })
+}
+
+/// What a MySQL error says of a row that breaks a constraint: a `check` (3819), a foreign key
+/// (1452) or a unique key (1062), its name read off the server's message. None for any other
+/// error, and where the message doesn't read as MySQL's English one does.
+#[cfg(feature = "cli")]
+pub(crate) fn mysql_breach(code: u16, message: &str) -> Option<Breach> {
+    let between = |from: &str, to: &str| -> Option<String> {
+        let at = message.find(from)? + from.len();
+        let end = message[at..].find(to)? + at;
+        Some(message[at..end].to_string())
+    };
+    match code {
+        // Check constraint 'people_mood' is violated.
+        3819 => Some(Breach { kind: Breaks::Check, name: between("Check constraint '", "' is violated")?, ..Breach::default() }),
+        // Cannot add or update a child row: a foreign key constraint fails (`db`.`#sql-…`, CONSTRAINT `people_team` FOREIGN KEY (`team_id`) REFERENCES `teams` (`id`))
+        1452 => Some(Breach { kind: Breaks::ForeignKey, name: between("CONSTRAINT `", "` FOREIGN KEY")?, ..Breach::default() }),
+        // Duplicate entry 'a' for key 'users.email'
+        1062 => {
+            // The last ` for key '…'`, since the duplicated value comes first and may hold the words.
+            let key = message.rsplit_once(" for key '").map(|(_, k)| k.trim_end_matches(['\'', '.']).to_string())?;
+            let (table, name) = key.rsplit_once('.').map(|(t, n)| (t.to_string(), n.to_string())).unwrap_or((String::new(), key));
+            Some(Breach { kind: Breaks::Unique, name, table, ..Breach::default() })
+        }
+        _ => None,
+    }
 }
 
 impl From<Error> for Ran {
     fn from(e: Error) -> Ran {
         Ran::Failed(e)
     }
+}
+
+/// The sql_mode a MySQL session whose `mode` isn't strict runs a table's change under: its own,
+/// with strict mode on, so that the change fails on a value its new type can't hold (an enum's
+/// label it no longer lists, a string too long, a number out of range) rather than storing another
+/// in its place, as a change fails on a value it can't keep on Postgres. Strict mode also refuses
+/// dates a session that isn't strict takes (a zero date, `2026-02-31`) and a division by zero,
+/// where the table may hold such values the change copies: so the modes that refuse them are left
+/// out, and invalid dates allowed, which keeps them as they are. None where `mode` is strict already.
+pub fn strict_mode(mode: &str) -> Option<String> {
+    let modes: Vec<&str> = mode.split(',').map(str::trim).filter(|m| !m.is_empty()).collect();
+    if modes.iter().any(|m| matches!(*m, "STRICT_TRANS_TABLES" | "STRICT_ALL_TABLES" | "TRADITIONAL")) {
+        return None;
+    }
+    let mut strict: Vec<&str> = modes.into_iter().filter(|m| !matches!(*m, "NO_ZERO_DATE" | "NO_ZERO_IN_DATE" | "ERROR_FOR_DIVISION_BY_ZERO" | "ALLOW_INVALID_DATES")).collect();
+    strict.extend(["ALLOW_INVALID_DATES", "STRICT_ALL_TABLES"]);
+    Some(strict.join(","))
+}
+
+fn set_sql_mode(mode: &str) -> String {
+    format!("set session sql_mode = '{}'", mode.replace('\\', "\\\\").replace('\'', "''"))
 }
 
 #[cfg(feature = "cli")]
@@ -424,10 +531,39 @@ impl Db {
         if self.dialect() != Dialect::Mysql {
             return self.exec(sql).await;
         }
+        let mut locked = false;
         for statement in crate::sql::split_statements(sql, Dialect::Mysql) {
-            self.exec(&statement.text).await?;
+            let restore = if crate::sql::alters_table(&statement) { self.make_strict().await? } else { None };
+            let ran = self.exec(&statement.text).await;
+            // The session's own mode is set back whether the change ran or failed.
+            let back = match restore {
+                Some(mode) => self.exec(&set_sql_mode(&mode)).await,
+                None => Ok(()),
+            };
+            if let Err(e) = ran.and(back) {
+                self.unlock(locked).await;
+                return Err(e);
+            }
+            locked = (locked || crate::sql::locks_tables(&statement)) && !crate::sql::unlocks_tables(&statement);
         }
         Ok(())
+    }
+
+    /// Releases the tables a MySQL script locked (`lock tables`) and failed before it unlocked them,
+    /// so that the session can go on: it reaches no other table while it holds them.
+    async fn unlock(&mut self, locked: bool) {
+        if locked {
+            let _ = self.exec("unlock tables").await;
+        }
+    }
+
+    /// Sets a MySQL session whose sql_mode isn't strict to [`strict_mode`] for a table's change, and
+    /// gives its own mode, to set back after; None where it is strict already.
+    async fn make_strict(&mut self) -> Result<Option<String>, Error> {
+        let mode = self.rows("select @@session.sql_mode as m").await?.first().map(|r| r.text("m").to_string()).unwrap_or_default();
+        let Some(strict) = strict_mode(&mode) else { return Ok(None) };
+        self.exec(&set_sql_mode(&strict)).await?;
+        Ok(Some(mode))
     }
 
     /// Runs a script as [`Db::script`] does, and gives what each statement that returns rows returned,
@@ -527,22 +663,56 @@ impl Db {
             #[cfg(feature = "cli")]
             Db::Postgres(client) => client.batch_execute(sql).await.map_err(|e| {
                 let waited = e.code() == Some(&tokio_postgres::error::SqlState::LOCK_NOT_AVAILABLE);
+                let breach = pg_breach(&e);
                 let e = pg_error(e);
-                if waited {
-                    Ran::Waited(e)
-                } else {
-                    Ran::Failed(e)
+                match breach {
+                    _ if waited => Ran::Waited(e),
+                    Some(b) => Ran::Broke(e, b),
+                    None => Ran::Failed(e),
                 }
             }),
             #[cfg(feature = "cli")]
-            Db::Mysql(conn) => {
+            Db::Mysql(_) => {
+                let mut locked = false;
                 for statement in crate::sql::split_statements(sql, Dialect::Mysql) {
-                    if let Err(e) = conn.query_drop(&statement.text).await {
+                    let restore = match crate::sql::alters_table(&statement) {
+                        true => match self.make_strict().await {
+                            Ok(restore) => restore,
+                            Err(e) => {
+                                self.unlock(locked).await;
+                                return Err(Ran::Failed(e));
+                            }
+                        },
+                        false => None,
+                    };
+                    let Db::Mysql(conn) = &mut *self else { unreachable!("a MySQL session") };
+                    let ran = conn.query_drop(&statement.text).await;
+                    // The session's own mode is set back whether the change ran or failed; failing to
+                    // after it ran leaves the change in place.
+                    let back = match restore {
+                        Some(mode) => self.exec(&set_sql_mode(&mode)).await,
+                        None => Ok(()),
+                    };
+                    if let Err(e) = ran {
+                        self.unlock(locked).await;
                         // ER_LOCK_WAIT_TIMEOUT: a metadata lock, or a row's, waited past its limit.
                         let waited = matches!(&e, mysql_async::Error::Server(s) if s.code == 1205);
+                        let breach = match &e {
+                            mysql_async::Error::Server(s) => mysql_breach(s.code, &s.message),
+                            _ => None,
+                        };
                         let e = mysql_error(e);
-                        return Err(if waited { Ran::Waited(e) } else { Ran::Failed(e) });
+                        return Err(match breach {
+                            _ if waited => Ran::Waited(e),
+                            Some(b) => Ran::Broke(e, b),
+                            None => Ran::Failed(e),
+                        });
                     }
+                    if let Err(e) = back {
+                        self.unlock(locked).await;
+                        return Err(Ran::Partly(e));
+                    }
+                    locked = (locked || crate::sql::locks_tables(&statement)) && !crate::sql::unlocks_tables(&statement);
                 }
                 Ok(())
             }
@@ -662,7 +832,12 @@ pub fn with_database(url: &str, name: &str) -> String {
         Some(at) => &tail[at..],
         None => "",
     };
-    format!("{}://{authority}/{name}{query}", &url[..scheme_end])
+    // A `dbname` setting names the database over the path, as libpq and tokio-postgres read it: it
+    // would send a shadow's session to the target's own database.
+    let (query, fragment) = query.split_at(query.find('#').unwrap_or(query.len()));
+    let kept: Vec<&str> = query.strip_prefix('?').unwrap_or(query).split('&').filter(|pair| !pair.is_empty() && crate::percent_decode(pair.split('=').next().unwrap_or_default()) != "dbname").collect();
+    let query = if kept.is_empty() { String::new() } else { format!("?{}", kept.join("&")) };
+    format!("{}://{authority}/{name}{query}{fragment}", &url[..scheme_end])
 }
 
 /// A URL as a heading says it: no credentials and no settings. Whatever is before the last `@` is
@@ -992,6 +1167,122 @@ async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url:
     Ok(Owned { statements: vec![], extensions, role: None, note: Some(note) })
 }
 
+/// A privilege one of Supabase's Data API roles may have by default on what `postgres` makes in
+/// `public`: `(objects, role, privilege)`, as `("tables", "anon", "SELECT")`.
+pub(crate) type ApiPrivilege = (String, String, String);
+
+/// The privileges a Supabase project's settings grant its Data API's roles by default, or not, each
+/// set together: whether new tables are exposed to the API (reading and writing a table's rows, and
+/// using a sequence), and whether new functions are. Supabase turned the first off for new projects
+/// in 2026 and for every hosted project later, while its local stack keeps it on unless told
+/// otherwise. A new Supabase database grants every other privilege on what `postgres` makes in
+/// `public` either way.
+pub(crate) const API_SETTINGS: [&[(&str, &[&str])]; 2] = [&[("tables", &["DELETE", "INSERT", "SELECT", "UPDATE"]), ("sequences", &["SELECT", "USAGE"])], &[("functions", &["EXECUTE"])]];
+
+/// For each of [`API_SETTINGS`], whether a database started with it on: read from the privileges it
+/// grants now (`current`), all but those a project's SQL changes (`changed`), as most of the rest
+/// grant or don't; on where it changes them all, as every new Supabase database once started.
+pub(crate) fn api_settings(current: &[ApiPrivilege], changed: &[ApiPrivilege]) -> [bool; 2] {
+    api_settings_shown(current, changed).map(|shown| shown.unwrap_or(true))
+}
+
+/// As [`api_settings`], but none for a setting all of whose privileges `changed` holds, which the
+/// privileges left say nothing of.
+pub(crate) fn api_settings_shown(current: &[ApiPrivilege], changed: &[ApiPrivilege]) -> [Option<bool>; 2] {
+    API_SETTINGS.map(|setting| {
+        let (mut on, mut off) = (0, 0);
+        for (objects, privileges) in setting {
+            for role in crate::catalog::PLATFORM_API_ROLES {
+                for privilege in privileges.iter() {
+                    let one = (objects.to_string(), role.to_string(), privilege.to_string());
+                    if changed.contains(&one) {
+                        continue;
+                    }
+                    if current.contains(&one) {
+                        on += 1;
+                    } else {
+                        off += 1;
+                    }
+                }
+            }
+        }
+        (on + off > 0).then_some(on >= off)
+    })
+}
+
+/// The note on the history table that records how a Supabase database began: under which settings
+/// ([`API_SETTINGS`]), and with which of Supabase's own extensions
+/// ([`crate::catalog::PLATFORM_EXTENSIONS`]), which nothing else shows once its migrations have
+/// changed them.
+pub(crate) fn api_settings_note(on: [bool; 2], extensions: &[String]) -> String {
+    let said = |on: bool| if on { "exposed" } else { "not exposed" };
+    let with = if extensions.is_empty() { "none of Supabase's extensions".to_string() } else { format!("Supabase's extensions {}", extensions.join(", ")) };
+    format!("Reylo Migrate's history. This database began with Supabase's Data API settings: new tables {}, new functions {}. It began with {with}.", said(on[0]), said(on[1]))
+}
+
+/// The extensions of Supabase's a history table's `note` records the database began with
+/// ([`api_settings_note`]).
+pub(crate) fn extensions_in_note(note: &str) -> Option<Vec<String>> {
+    if note.contains("It began with none of Supabase's extensions.") {
+        return Some(vec![]);
+    }
+    let rest = note.split_once("It began with Supabase's extensions ")?.1;
+    let list = rest.split_once('.')?.0;
+    Some(list.split(", ").map(String::from).collect())
+}
+
+/// The settings a history table's `note` records ([`api_settings_note`]).
+pub(crate) fn api_settings_in_note(note: &str) -> Option<[bool; 2]> {
+    let read = |what: &str| {
+        if note.contains(&format!("new {what} not exposed")) {
+            Some(false)
+        } else if note.contains(&format!("new {what} exposed")) {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    Some([read("tables")?, read("functions")?])
+}
+
+/// What a new Supabase database starts with for its Data API, under the settings `on`
+/// ([`api_settings`]), as the statements that make it: `postgres`'s default privileges in `public`
+/// for the API's roles, and the grants of `USAGE` on `public` to them and to `postgres`. One
+/// statement each, so that a server without one of the roles leaves out only it.
+pub(crate) fn platform_defaults(on: [bool; 2]) -> (Vec<String>, Vec<String>) {
+    use crate::catalog::{PLATFORM_API_ROLES, PLATFORM_CREATOR};
+    let head = format!("alter default privileges for role {PLATFORM_CREATOR} in schema public");
+    let mut privileges: Vec<String> = Vec::new();
+    for role in PLATFORM_API_ROLES {
+        for objects in ["tables", "sequences", "functions"] {
+            privileges.push(format!("{head} grant all on {objects} to {role}"));
+        }
+        for (setting, on) in API_SETTINGS.iter().zip(on) {
+            for (objects, taken) in setting.iter().filter(|_| !on) {
+                privileges.push(format!("{head} revoke {} on {objects} from {role}", taken.join(", ").to_lowercase()));
+            }
+        }
+    }
+    let grants = std::iter::once(&PLATFORM_CREATOR).chain(PLATFORM_API_ROLES).map(|role| format!("grant usage on schema public to {role}")).collect();
+    (privileges, grants)
+}
+
+/// What `statements`, each one of [`default_privileges`], grant the Data API's roles on what
+/// `postgres` makes in `public`: the role that runs the migrations is `postgres` on Supabase, whose
+/// own name none of its statements, or another role named for `postgres`.
+pub(crate) fn api_privileges(statements: &[String]) -> Vec<ApiPrivilege> {
+    use crate::catalog::{PLATFORM_API_ROLES, PLATFORM_CREATOR};
+    statements
+        .iter()
+        .filter_map(|statement| {
+            let rest = statement.strip_prefix("alter default privileges in schema public grant ").or_else(|| statement.strip_prefix(&format!("alter default privileges for role {PLATFORM_CREATOR} in schema public grant ")))?;
+            let (privilege, rest) = rest.split_once(" on ")?;
+            let (objects, role) = rest.trim_end_matches(" with grant option").split_once(" to ")?;
+            (PLATFORM_API_ROLES.contains(&role) && ["tables", "sequences", "functions"].contains(&objects)).then(|| (objects.to_string(), role.to_string(), privilege.to_uppercase()))
+        })
+        .collect()
+}
+
 /// Gives a shadow's session the target's word on whether it is a platform's (`settings`, the target
 /// database's own, carry [`crate::catalog::PLATFORM_SCHEMAS_SETTING`]).
 #[cfg(feature = "cli")]
@@ -1088,8 +1379,26 @@ pub enum Server {
         /// is on the target, and left out where the shadows' role may not become it.
         owned: Owned,
         /// The target's privileges on the schemas a shadow has without the project making them
-        /// (`public`, and those its extensions are in), as `grant` statements.
+        /// (`public`, and those its extensions are in), as `grant` statements; made again in each
+        /// shadow but where SQL is written to make the database whole.
         schema_grants: Vec<String>,
+        copy_schema_grants: bool,
+        /// On a Supabase target, what a shadow is given where it takes none of the target's default
+        /// privileges or grants on its schemas: the default privileges `postgres` gives the Data
+        /// API's roles in `public` as the target began with them, under its project's settings
+        /// ([`API_SETTINGS`], [`Server::began_with`]), which the project's SQL changes from there;
+        /// and, for SQL written to make the database whole, their grants on `public` as a new
+        /// database has them.
+        platform_privileges: Vec<String>,
+        platform_schema_grants: Vec<String>,
+        /// Whether the target is Supabase's.
+        platform: bool,
+        /// Which of Supabase's own extensions the target began with, where that is known: what a
+        /// shadow has of them, in `extensions`, whatever the target has now.
+        began_extensions: Option<Vec<String>>,
+        /// Whether each shadow is given the platform's publication, empty, as the target was:
+        /// Supabase's `supabase_realtime`, which a project's SQL adds its tables to.
+        publication: bool,
     },
     Mysql {
         admin: mysql_async::Conn,
@@ -1222,7 +1531,31 @@ impl Server {
                 let schemas: Vec<String> = std::iter::once("public".to_string()).chain(extensions.iter().map(|(_, s)| s.clone())).filter(|s| !platform.contains(s)).collect();
                 let schema_grants = schema_grants(target, &schemas).await?;
                 let owned = owned_by_platform(target, &admin, url, version).await?;
-                Ok(Server::Postgres { admin, url: server_url.to_string(), create, locale: unknown_locale, settings, privileges, copy_privileges: true, extensions, leave: vec![], environment, environment_role, owned, schema_grants })
+                // On Supabase, the default privileges its Data API's roles have, the target's own,
+                // which Supabase sets for every project as it chooses; and its publication.
+                let platform_privileges = if names { platform_defaults(api_settings(&api_privileges(&privileges), &[])).0 } else { vec![] };
+                let publication = names && !target.rows(&format!("select 1 from pg_publication where pubname = {}", literal(crate::catalog::PLATFORM_PUBLICATION))).await?.is_empty();
+                Ok(Server::Postgres {
+                    admin,
+                    url: server_url.to_string(),
+                    create,
+                    locale: unknown_locale,
+                    settings,
+                    privileges,
+                    copy_privileges: true,
+                    extensions,
+                    leave: vec![],
+                    environment,
+                    environment_role,
+                    owned,
+                    schema_grants,
+                    copy_schema_grants: true,
+                    platform_privileges,
+                    platform_schema_grants: vec![],
+                    platform: names,
+                    began_extensions: None,
+                    publication,
+                })
             }
             Dialect::Mysql => {
                 let admin = crate::db::open_mysql(&with_database(server_url, "")).await?;
@@ -1279,7 +1612,9 @@ impl Server {
     /// privileges) but not its database settings, which a copy does not take. The lock named after
     /// it is held until it is dropped; a copy that fails releases it.
     pub(crate) async fn pg_shadow(&mut self, template: Option<&str>) -> Result<Shadow, Error> {
-        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, .. } = self else { return Err(Error("not a Postgres server".into())) };
+        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, copy_schema_grants, platform_privileges, platform_schema_grants, publication, began_extensions, .. } = self else {
+            return Err(Error("not a Postgres server".into()));
+        };
         let name = random_name();
         admin.batch_execute(&format!("select pg_advisory_lock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
         let made = async {
@@ -1328,9 +1663,11 @@ impl Server {
         let mut db = Db::Postgres(client);
         // For the session too, where the database may not take the setting from the role connected.
         mark_platform_names(&mut db, settings).await;
-        if *copy_privileges && template.is_none() {
+        if template.is_none() {
             // A role or schema the shadow's server lacks leaves that one out; the comparison says what follows.
-            for statement in privileges.iter() {
+            // Where the project's SQL sets default privileges, it sets them from those a new database
+            // of the platform's has, which are none but on Supabase.
+            for statement in if *copy_privileges { privileges.iter() } else { platform_privileges.iter() } {
                 let _ = db.exec(statement).await;
             }
         }
@@ -1342,7 +1679,17 @@ impl Server {
             // the replay, which says so.
             // The extensions in a schema of the project's first, which the platform's own may use;
             // those in a platform's schema after it is made, as the platform made it.
-            let copied: Vec<&(String, String)> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase()) && !owned.extensions.iter().any(|(o, _)| o == e)).collect();
+            // Supabase's own, where it is known which the target began with, as it began.
+            // One it began without that it has elsewhere, where no migration made it, is the
+            // environment's there, and copied; one it began with that is elsewhere now was moved there
+            // since, which the migrations replay.
+            let began = |e: &str| began_extensions.iter().flatten().any(|b| b.eq_ignore_ascii_case(e));
+            let begun = |e: &str, s: &str| began_extensions.is_some() && crate::catalog::PLATFORM_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)) && (s == "extensions" || began(e));
+            let copied: Vec<&(String, String)> = extensions.iter().filter(|(e, s)| !leave.contains(&e.to_lowercase()) && !owned.extensions.iter().any(|(o, _)| o == e) && !begun(e, s)).collect();
+            for e in began_extensions.iter().flatten().filter(|e| !leave.contains(&e.to_lowercase())) {
+                let _ = db.exec("create schema if not exists extensions").await;
+                let _ = db.exec(&format!("create extension if not exists {} with schema extensions", ident(e))).await;
+            }
             let platform_schema = |schema: &str| environment.iter().chain(owned.statements.iter()).any(|st| st.trim_start().to_ascii_lowercase().starts_with(&format!("create schema {}", schema.to_ascii_lowercase())));
             for (extension, schema) in copied.iter().filter(|(_, s)| !platform_schema(s)) {
                 let _ = db.exec(&format!("create schema if not exists {}", ident(schema))).await;
@@ -1351,7 +1698,7 @@ impl Server {
             for (_, schema) in owned.extensions.iter().filter(|(e, s)| owned.role.is_some() && !leave.contains(&e.to_lowercase()) && !platform_schema(s) && s != "pg_catalog") {
                 let _ = db.exec(&format!("create schema if not exists {}", ident(schema))).await;
             }
-            for statement in schema_grants.iter() {
+            for statement in if *copy_schema_grants { schema_grants.iter() } else { platform_schema_grants.iter() } {
                 let _ = db.exec(statement).await;
             }
             if let (Some(role), false) = (environment_role.as_deref(), environment.is_empty()) {
@@ -1381,6 +1728,9 @@ impl Server {
             for (extension, schema) in copied.iter().filter(|(_, s)| platform_schema(s)) {
                 let _ = db.exec(&format!("create extension if not exists {} with schema {}", ident(extension), ident(schema))).await;
             }
+            if *publication {
+                let _ = db.exec(&format!("create publication {}", ident(crate::catalog::PLATFORM_PUBLICATION))).await;
+            }
         }
         Ok(Shadow { db, name })
     }
@@ -1390,6 +1740,37 @@ impl Server {
         match self {
             Server::Postgres { owned, .. } => owned.note.as_deref(),
             _ => None,
+        }
+    }
+
+    /// A URL another process opens the shadow at: on Postgres and MySQL its database on the shadows'
+    /// server, and on SQLite, whose shadows are in memory, a copy written to `file`.
+    pub(crate) async fn url_of(&self, shadow: &mut Shadow, file: &Path) -> Result<String, Error> {
+        match self {
+            Server::Postgres { url, .. } | Server::Mysql { url, .. } => Ok(with_database(url, &shadow.name)),
+            // Copied as the replay cache copies a SQLite shadow, page by page.
+            Server::Sqlite { .. } => {
+                match &mut shadow.db {
+                    Db::Sqlite(conn) => crate::cache::sqlite_backup(conn, &rusqlite::Connection::open(file).map_err(sqlite_error)?)?,
+                    Db::LibsqlLocal(local) => local.backup_to(&mut crate::libsql_local::Local::open(&file.to_string_lossy())?)?,
+                    _ => return Err(Error("a SQLite shadow that is not in this process".into())),
+                }
+                Ok(format!("sqlite:{}", file.display()))
+            }
+        }
+    }
+
+    /// A statement on the session that makes shadows, so that a connection kept idle through a long
+    /// command (whose lock keeps other runs' sweeps off its shadow) isn't closed as idle.
+    pub(crate) async fn ping(&mut self) {
+        match self {
+            Server::Postgres { admin, .. } => {
+                let _ = admin.simple_query("select 1").await;
+            }
+            Server::Mysql { admin, .. } => {
+                let _ = admin.query_drop("select 1").await;
+            }
+            Server::Sqlite { .. } => {}
         }
     }
 
@@ -1418,6 +1799,38 @@ impl Server {
         }
     }
 
+    /// Whether the extension `name` is one every new database of the target's platform has where the
+    /// target has it ([`crate::catalog::PLATFORM_EXTENSIONS`]): a shadow has it as the target does,
+    /// where the project's files create it only if it isn't there, and a reset leaves it.
+    pub fn platform_extension(&self, name: &str) -> bool {
+        let Server::Postgres { extensions, platform: true, began_extensions, .. } = self else { return false };
+        if let Some(began) = began_extensions {
+            return began.iter().any(|b| b.eq_ignore_ascii_case(name));
+        }
+        crate::catalog::PLATFORM_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(name)) && extensions.iter().any(|(e, s)| e.eq_ignore_ascii_case(name) && s == "extensions")
+    }
+
+    /// The schema the target has an extension in, by name.
+    pub fn extension_schema(&self, name: &str) -> Option<&str> {
+        let Server::Postgres { extensions, .. } = self else { return None };
+        extensions.iter().find(|(e, _)| e.eq_ignore_ascii_case(name)).map(|(_, s)| s.as_str())
+    }
+
+    /// Which of Supabase's own extensions the target began with, where that is known.
+    pub fn began_extensions(&self) -> Vec<String> {
+        match self {
+            Server::Postgres { began_extensions: Some(began), platform: true, .. } => began.clone(),
+            _ => vec![],
+        }
+    }
+
+    /// Which of Supabase's own extensions the target began with, which its shadows begin with.
+    pub fn began_with_extensions(&mut self, names: Vec<String>) {
+        if let Server::Postgres { began_extensions, platform: true, .. } = self {
+            *began_extensions = Some(names);
+        }
+    }
+
     /// The schemas the project's own files create: an extension the target keeps in one of them (one
     /// the project once created there, and no longer does) is left out of a shadow too, whose
     /// `create schema` it would otherwise stop.
@@ -1432,6 +1845,39 @@ impl Server {
     pub fn copy_default_privileges(&mut self, on: bool) {
         if let Server::Postgres { copy_privileges, .. } = self {
             *copy_privileges = on;
+        }
+    }
+
+    /// Shadows leave what a new database of the platform's has to the project's own files, which
+    /// make it, as a project begun before Reylo took it for the platform's did: its publication, and
+    /// its default privileges and grants for the Data API.
+    pub fn leave_platform(&mut self) {
+        if let Server::Postgres { publication, platform_privileges, platform_schema_grants, platform, .. } = self {
+            *publication = false;
+            *platform = false;
+            platform_privileges.clear();
+            platform_schema_grants.clear();
+        }
+    }
+
+    /// The settings the target began under ([`API_SETTINGS`]), which its shadows begin under.
+    pub fn began_with(&mut self, on: [bool; 2]) {
+        if let Server::Postgres { platform_privileges, platform: true, .. } = self {
+            *platform_privileges = platform_defaults(on).0;
+        }
+    }
+
+    /// Shadows take none of the target's default privileges or grants on its schemas: for SQL written
+    /// to make the database whole (init's, introspect's), which makes them itself. Which of them a new
+    /// database on the server has already, no name tells, so they are all the SQL's, but on Supabase,
+    /// whose new databases have their own, which shadows take.
+    pub fn copy_no_privileges(&mut self) {
+        if let Server::Postgres { copy_privileges, copy_schema_grants, platform_schema_grants, platform, .. } = self {
+            *copy_privileges = false;
+            *copy_schema_grants = false;
+            if *platform {
+                *platform_schema_grants = platform_defaults([true, true]).1;
+            }
         }
     }
 
@@ -1559,6 +2005,39 @@ mod url_tests {
     use super::*;
 
     #[test]
+    fn a_supabase_databases_settings_are_read_from_what_its_sql_leaves_alone() {
+        let all = |objects: &str, privileges: &[&str], roles: &[&str]| -> Vec<ApiPrivilege> { roles.iter().flat_map(|r| privileges.iter().map(move |p| (objects.to_string(), r.to_string(), p.to_string()))).collect() };
+        let roles = ["anon", "authenticated", "service_role"];
+        let tables = ["DELETE", "INSERT", "SELECT", "UPDATE"];
+        let exposed: Vec<ApiPrivilege> = [all("tables", &tables, &roles), all("sequences", &["SELECT", "USAGE"], &roles), all("functions", &["EXECUTE"], &roles)].concat();
+        assert_eq!(api_settings(&exposed, &[]), [true, true]);
+        assert_eq!(api_settings(&all("functions", &["EXECUTE"], &roles), &[]), [false, true]);
+        // Taken from anon alone, the rest say how it started; and a change to anon alone says nothing.
+        let hidden_from_anon: Vec<ApiPrivilege> = exposed.iter().filter(|(_, r, _)| r != "anon").cloned().collect();
+        assert_eq!(api_settings(&hidden_from_anon, &[]), [true, true]);
+        assert_eq!(api_settings(&all("tables", &["SELECT"], &["authenticated"]), &all("tables", &["SELECT"], &["authenticated"])), [false, false]);
+        // Every one changed says nothing either: it started as Supabase's projects once all did.
+        assert_eq!(api_settings(&[], &exposed), [true, true]);
+        assert_eq!(api_settings_in_note(&api_settings_note([false, true], &[])), Some([false, true]));
+        assert_eq!(api_settings_in_note(&api_settings_note([true, false], &[])), Some([true, false]));
+        assert_eq!(extensions_in_note(&api_settings_note([true, true], &["pgcrypto".into(), "uuid-ossp".into()])), Some(vec!["pgcrypto".to_string(), "uuid-ossp".to_string()]));
+        assert_eq!(extensions_in_note(&api_settings_note([true, true], &[])), Some(vec![]));
+        assert_eq!(extensions_in_note("Reylo Migrate's history. This database began with Supabase's Data API settings: new tables exposed, new functions exposed."), None);
+        assert_eq!(api_settings_in_note("the history"), None);
+        let (privileges, _) = platform_defaults([false, true]);
+        assert!(privileges.contains(&"alter default privileges for role postgres in schema public revoke delete, insert, select, update on tables from anon".to_string()), "{privileges:?}");
+    }
+
+    #[test]
+    fn a_table_change_runs_strict_where_the_session_isnt() {
+        assert_eq!(strict_mode("ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_DATE"), None);
+        assert_eq!(strict_mode("TRADITIONAL"), None);
+        assert_eq!(strict_mode("").as_deref(), Some("ALLOW_INVALID_DATES,STRICT_ALL_TABLES"));
+        assert_eq!(strict_mode("NO_ENGINE_SUBSTITUTION").as_deref(), Some("NO_ENGINE_SUBSTITUTION,ALLOW_INVALID_DATES,STRICT_ALL_TABLES"));
+        assert_eq!(strict_mode("ANSI_QUOTES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,ALLOW_INVALID_DATES").as_deref(), Some("ANSI_QUOTES,ALLOW_INVALID_DATES,STRICT_ALL_TABLES"));
+    }
+
+    #[test]
     fn a_locale_is_spelled_as_the_shadow_server_spells_it() {
         let mac: Vec<String> = ["C", "POSIX", "en_US.UTF-8", "de_DE.ISO8859-1", "sr_YU.UTF-8@latin"].map(String::from).to_vec();
         let linux: Vec<String> = ["C", "POSIX", "C.utf8", "en_US.utf8", "de_DE.iso88591"].map(String::from).to_vec();
@@ -1646,5 +2125,20 @@ mod url_tests {
         ] {
             assert_eq!(transaction_pooler(url, "direct_url"), None, "{url}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_database;
+
+    #[test]
+    fn a_database_swapped_into_a_url_is_the_one_its_session_opens() {
+        assert_eq!(with_database("postgres://u:p@h:5432/app?sslmode=require#x", "reylo_shadow_1"), "postgres://u:p@h:5432/reylo_shadow_1?sslmode=require#x");
+        // A dbname setting would name the target over the path.
+        assert_eq!(with_database("postgres://u:p@h/app?dbname=app&sslmode=require", "reylo_shadow_1"), "postgres://u:p@h/reylo_shadow_1?sslmode=require");
+        assert_eq!(with_database("postgres://u:p@h/app?dbname=app", "postgres"), "postgres://u:p@h/postgres");
+        assert_eq!(with_database("postgres://u:p@h/app?%64bname=app", "postgres"), "postgres://u:p@h/postgres");
+        assert_eq!(with_database("mysql://root@h:3306", "reylo_shadow_1"), "mysql://root@h:3306/reylo_shadow_1");
     }
 }

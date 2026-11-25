@@ -13,7 +13,7 @@ import { columnKind, describe, given, hstoreText, ParameterError, postgresInterv
 
 export { describe, zoned } from "./values.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "clickhouse";
 /** A structured parameter's column list as written, by member, beside its type's fields. */
 export type Members = readonly { readonly written: string; readonly schema?: JsonSchema }[];
 /** One member: its field of the parameter's record and the type its column list writes. */
@@ -143,8 +143,9 @@ function check(type: EngineType, written: string, v: unknown, dialect: Dialect, 
       return v;
     case "enum":
       if (type.type.kind === "text") {
-        if (typeof v === "string" && type.values.includes(v)) return v;
-        return fail(`is the enum ${type.label ?? written}, one of ${type.values.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(v)}.`);
+        const labels = type.values.map((l) => l.value);
+        if (typeof v === "string" && labels.includes(v)) return v;
+        return fail(`is the enum ${type.label ?? written}, one of ${labels.map((l) => JSON.stringify(l)).join(", ")}; got ${describe(v)}.`);
       }
       return check(type.type, written, v, dialect, fail);
     case "array":
