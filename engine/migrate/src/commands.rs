@@ -415,6 +415,12 @@ async fn ensure_history(db: &mut Db) -> Result<(), Error> {
             for r in granted {
                 db.exec(&format!("revoke all on table {HISTORY_TABLE} from {}", r.text("grantee"))).await?;
             }
+            // On Supabase, how the database began, which its shadows begin as: it has run no
+            // migration of Reylo's yet.
+            if let Some(on) = api_began(db).await? {
+                let extensions = platform_extensions_now(db).await?;
+                note_api_began(db, on, &extensions).await?;
+            }
             db.exec("commit").await
         }
         .await;
@@ -978,6 +984,81 @@ fn without_default_grants(lines: &[String]) -> Vec<String> {
     lines.iter().filter(|l| !comes_with(l)).cloned().collect()
 }
 
+/// One side of a diff without the privileges an object it adds is made with, under the default
+/// privileges of the role that makes it: `schema`, that side's whole schema, holds them, and an
+/// object `other`, the other side's, lacks is one it adds. On Supabase, every table, sequence and
+/// function made in `public` grants each of the Data API's roles every privilege, which the SQL that
+/// makes it needn't grant. A grant that changes on an object both sides have is kept.
+fn without_made_grants(lines: &[String], schema: &[String], other: &[String]) -> Vec<String> {
+    // The defaults of the role that makes an object, which name no role: `(schema, objects, entry)`.
+    let defaults: Vec<(Option<&str>, &str, String)> = schema
+        .iter()
+        .filter_map(|l| l.strip_prefix(crate::catalog::DEFAULT_PRIVILEGES))
+        .filter_map(|rest| {
+            let (schema, rest) = match rest.strip_prefix("in schema ") {
+                Some(rest) => {
+                    let name = crate::catalog::name_at(rest);
+                    (Some(name), rest[name.len()..].trim_start())
+                }
+                None => (None, rest),
+            };
+            let rest = rest.strip_prefix("grant ")?;
+            let (rest, option) = match rest.strip_suffix(" with grant option") {
+                Some(rest) => (rest, "*"),
+                None => (rest, ""),
+            };
+            let (privilege, rest) = rest.split_once(" on ")?;
+            let (objects, role) = rest.split_once(" to ")?;
+            let role = if role == "public" { "PUBLIC" } else { role };
+            Some((schema, objects, format!("{role}:{}{option}", privilege.to_uppercase())))
+        })
+        .collect();
+    if defaults.is_empty() {
+        return lines.to_vec();
+    }
+    let relation = |line: &str, name: &str| ["table ", "view ", "materialized view ", "foreign table "].iter().any(|k| line.strip_prefix(k).is_some_and(|rest| crate::catalog::name_at(rest) == name));
+    let sequence = |line: &str, name: &str| line.strip_prefix("sequence ").is_some_and(|rest| crate::catalog::name_at(rest) == name);
+    let routine = |line: &str, name: &str| {
+        let base = name.split('(').next().unwrap_or_default();
+        line.strip_prefix("function ").is_some_and(|def| def.contains(&format!(" FUNCTION {base}(")) || def.contains(&format!(" PROCEDURE {base}(")))
+    };
+    lines
+        .iter()
+        .filter_map(|l| {
+            let Some(rest) = l.strip_prefix("grant ") else { return Some(l.clone()) };
+            let Some((object, acl)) = rest.rsplit_once(' ') else { return Some(l.clone()) };
+            let (objects, name) = if let Some(name) = object.strip_prefix("sequence of identity ") {
+                ("sequences", name)
+            } else if let Some(name) = object.strip_prefix("sequence ") {
+                ("sequences", name)
+            } else if let Some(name) = object.strip_prefix("function ").or_else(|| object.strip_prefix("procedure ")) {
+                ("functions", name)
+            } else {
+                ("tables", object)
+            };
+            let in_other = match objects {
+                "tables" => other.iter().any(|o| relation(o, name)),
+                "sequences" if object.starts_with("sequence of identity ") => {
+                    let table = name.rsplit_once('.').map(|(t, _)| t).unwrap_or_default();
+                    other.iter().any(|o| relation(o, table))
+                }
+                "sequences" => other.iter().any(|o| sequence(o, name)),
+                _ => other.iter().any(|o| routine(o, name)),
+            };
+            if in_other {
+                return Some(l.clone());
+            }
+            let schema_of = crate::catalog::name_at(name).split('.').next().unwrap_or_default().trim_matches('"').to_string();
+            let kept: Vec<&str> = acl.split(',').filter(|entry| !defaults.iter().any(|(s, o, e)| *o == objects && e == entry && s.is_none_or(|s| s.trim_matches('"') == schema_of))).collect();
+            match kept.len() {
+                0 => None,
+                n if n == acl.split(',').count() => Some(l.clone()),
+                _ => Some(format!("grant {object} {}", kept.join(","))),
+            }
+        })
+        .collect()
+}
+
 /// A comparison line as a person reads it: `public.` left out, and an index or a constraint as SQL
 /// writes it, its keywords in lowercase, rather than as the catalog prints it. An index reads
 /// `index <name> on <table> (<columns>)` on every database, and SQLite's index, view or trigger
@@ -1366,7 +1447,7 @@ fn top_words(line: &str) -> Vec<&str> {
 fn listed(gone: &[String], came: &[String], before: &[String], after: &[String], d: Dialect) -> Vec<String> {
     let mysql = d == Dialect::Mysql;
     const MAX: usize = 20;
-    let (gone, came) = (without_default_grants(gone), without_default_grants(came));
+    let (gone, came) = (without_default_grants(&without_made_grants(gone, before, after)), without_default_grants(&without_made_grants(came, after, before)));
     let constraint_names = |lines: &[String]| -> Vec<String> { lines.iter().filter_map(|l| l.strip_prefix("constraint ")).filter_map(|rest| rest.split(' ').nth(1)).map(str::to_string).collect() };
     let made_by_constraint = |line: &str, names: &[String]| names.iter().any(|n| line.starts_with("index ") && line.contains(&format!(" INDEX {n} ON ")));
     let (gone_names, came_names) = (constraint_names(&gone), constraint_names(&came));
@@ -2405,6 +2486,28 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
     // Nothing is recorded without running but what a cut-off run of Reylo's own left (below).
     let records: Vec<Migration> = Vec::new();
     let pending: Vec<Migration> = files.iter().filter(|f| !applied_files.iter().any(|a| a.name == f.name) && !records.contains(f)).cloned().collect();
+    // A migration that creates the publication every Supabase database has, as a project begun
+    // before Reylo left it to Supabase writes it, fails on one.
+    // The first pending migration that creates or drops it, in the order they run.
+    let first = pending.iter().find_map(|p| platform_publication_created_first(&[p.sql.as_str()]).map(|created| (p, created)));
+    if let (Dialect::Postgres, Some((p, true))) = (d, first) {
+        let has = db
+            .rows(&format!("select 1 from pg_publication where pubname = {} and {}", crate::db::literal(crate::catalog::PLATFORM_PUBLICATION), crate::catalog::platform_names()))
+            .await?;
+        if !has.is_empty() {
+            let name = crate::catalog::PLATFORM_PUBLICATION;
+            let mut problem = Problem::new("platform-publication-exists", format!("Migration {} creates {name}, which this Supabase database has already", p.name))
+                .note(format!("Every Supabase database has it, and a migration adds its tables to it with alter publication {name} add table."));
+            if p.name == INIT {
+                problem = problem
+                    .note(format!("A project begun with an earlier version of Reylo creates it in {INIT}."))
+                    .fix("Start the migrations again from your development database, which ran them all", &["mv reylo reylo-old", "reylo migrate init"])
+                    .fix("Then record them on each other database that ran the old ones, running nothing", &["reylo migrate history push --url <url>"])
+                    .note(format!("The new {INIT} makes the schema alone, so rows a new database needs go into a new migration, with insert … on conflict do nothing."));
+            }
+            problems.push(problem);
+        }
+    }
     // init.sql, which `init` writes, holds the whole schema and runs only on an empty database.
     for p in pending.iter().filter(|f| f.name != INIT) {
         if let Some(why) = atomicity_problem(&p.sql, d) {
@@ -2976,6 +3079,311 @@ fn created_schemas(opts: &Options) -> Vec<String> {
         .collect()
 }
 
+/// Whether the project's own files create the platform's publication, as those of a project begun
+/// before Reylo took what a new Supabase database has for Supabase's did: they make all of it, so
+/// its shadows leave all of it to them.
+fn creates_platform_publication(opts: &Options) -> bool {
+    let files = opts.migrations().map(|(files, _)| run_order(opts, &files)).unwrap_or_default();
+    let texts: Vec<String> = files.into_iter().map(|f| f.sql).chain(opts.schema_text()).collect();
+    platform_publication_created_first(&texts.iter().map(String::as_str).collect::<Vec<_>>()) == Some(true)
+}
+
+/// Whether the first statement in `texts`, in their order, that creates or drops the platform's
+/// publication creates it: read as SQL, so that text in a string or a comment, or a quoted name of
+/// another case, is none. None where no statement does either.
+fn platform_publication_created_first(texts: &[&str]) -> Option<bool> {
+    use crate::sql::TokenKind;
+    let named = |t: &crate::sql::Token| match t.kind {
+        TokenKind::Word => t.text.eq_ignore_ascii_case(crate::catalog::PLATFORM_PUBLICATION),
+        TokenKind::Quoted => quoted_name(&t.text) == crate::catalog::PLATFORM_PUBLICATION,
+        _ => false,
+    };
+    for text in texts {
+        let tokens = crate::sql::tokenize(text, Dialect::Postgres);
+        for k in 0..tokens.len() {
+            match (tokens[k].upper().as_str(), tokens.get(k + 1).map(|t| t.upper())) {
+                ("CREATE", Some(p)) if p == "PUBLICATION" && tokens.get(k + 2).is_some_and(named) => return Some(true),
+                ("DROP", Some(p)) if p == "PUBLICATION" => {
+                    // Each name of its list.
+                    let mut j = if tokens.get(k + 2).is_some_and(|t| t.upper() == "IF") { k + 4 } else { k + 2 };
+                    while let Some(t) = tokens.get(j).filter(|t| matches!(t.kind, TokenKind::Word | TokenKind::Quoted)) {
+                        if named(t) {
+                            return Some(false);
+                        }
+                        if !tokens.get(j + 1).is_some_and(|t| t.text == ",") {
+                            break;
+                        }
+                        j += 2;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    None
+}
+
+/// A Postgres quoted identifier's name: its outer quotes taken off, and each doubled quote in it
+/// made one.
+fn quoted_name(text: &str) -> String {
+    text.strip_prefix('"').and_then(|t| t.strip_suffix('"')).unwrap_or(text).replace("\"\"", "\"")
+}
+
+/// The extensions the project's migrations take a database to have begun without: those whose first
+/// statement, in the order the migrations run, creates them whether or not the database has them
+/// already (with no `if not exists`), rather than dropping them first, or creating them only where
+/// they aren't, which does nothing where Supabase made them. By name: a word's lowercase.
+fn unconditional_extensions(opts: &Options) -> Vec<String> {
+    let files = opts.migrations().map(|(files, _)| run_order(opts, &files)).unwrap_or_default();
+    extensions_begun_without(&files.iter().map(|f| f.sql.as_str()).collect::<Vec<_>>())
+}
+
+/// As [`unconditional_extensions`], of the migrations' texts in the order they run.
+fn extensions_begun_without(texts: &[&str]) -> Vec<String> {
+    extension_first_touches(texts).into_iter().filter(|(_, touch)| *touch == Touch::Created).map(|(n, _)| n).collect()
+}
+
+/// What a statement does to an extension: creates it whether or not the database has it already,
+/// creates it only where it hasn't, drops it, or moves it out of `extensions`, where Supabase makes
+/// its own. Another change to it says nothing of where it began, and is none.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Touch {
+    Created,
+    CreatedIfMissing,
+    Dropped,
+    MovedOut,
+}
+
+/// Each extension's first statement in `texts`, in their order: by name, a word's lowercase.
+fn extension_first_touches(texts: &[&str]) -> Vec<(String, Touch)> {
+    use crate::sql::TokenKind;
+    let name = |t: &crate::sql::Token| match t.kind {
+        TokenKind::Word => Some(t.text.to_lowercase()),
+        TokenKind::Quoted => Some(quoted_name(&t.text)),
+        _ => None,
+    };
+    let mut first: Vec<(String, Touch)> = Vec::new();
+    for text in texts {
+        let tokens = crate::sql::tokenize(text, Dialect::Postgres);
+        for k in 0..tokens.len() {
+            let mut touched: Vec<(String, Touch)> = Vec::new();
+            match (tokens[k].upper().as_str(), tokens.get(k + 1).map(|t| t.upper())) {
+                ("CREATE", Some(e)) if e == "EXTENSION" => {
+                    let conditional = tokens.get(k + 2).is_some_and(|t| t.upper() == "IF");
+                    if let Some(n) = tokens.get(if conditional { k + 5 } else { k + 2 }).and_then(name) {
+                        touched.push((n, if conditional { Touch::CreatedIfMissing } else { Touch::Created }));
+                    }
+                }
+                ("ALTER", Some(e)) if e == "EXTENSION" => {
+                    let set_schema = tokens.get(k + 3).is_some_and(|t| t.upper() == "SET") && tokens.get(k + 4).is_some_and(|t| t.upper() == "SCHEMA");
+                    if let (Some(n), true, Some(to)) = (tokens.get(k + 2).and_then(name), set_schema, tokens.get(k + 5).and_then(name)) {
+                        if to != "extensions" {
+                            touched.push((n, Touch::MovedOut));
+                        }
+                    }
+                }
+                ("DROP", Some(e)) if e == "EXTENSION" => {
+                    let mut j = if tokens.get(k + 2).is_some_and(|t| t.upper() == "IF") { k + 4 } else { k + 2 };
+                    // Each name of its list.
+                    while let Some(n) = tokens.get(j).and_then(name) {
+                        touched.push((n, Touch::Dropped));
+                        if tokens.get(j + 1).is_some_and(|t| t.text == ",") {
+                            j += 2;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for (n, touch) in touched {
+                if !first.iter().any(|(f, _)| *f == n) {
+                    first.push((n, touch));
+                }
+            }
+        }
+    }
+    first
+}
+
+/// Which of Supabase's own extensions a Supabase database has now, in `extensions`, by name.
+async fn platform_extensions_now(db: &mut Db) -> Result<Vec<String>, Error> {
+    let rows = db
+        .rows(&format!("select x.extname as name from pg_extension x join pg_namespace n on n.oid = x.extnamespace where {} order by 1", crate::catalog::platform_extension("x", "n")))
+        .await?;
+    Ok(rows.iter().map(|r| r.text("name").to_string()).collect())
+}
+
+/// Which of Supabase's own extensions a Supabase database began with: as its history table notes,
+/// else, where it has run no migration, those it has; none where neither tells, or off Supabase.
+async fn extensions_began(db: &mut Db) -> Result<Option<Vec<String>>, Error> {
+    if api_began(db).await?.is_none() {
+        return Ok(None);
+    }
+    if has_history(db).await? {
+        let note = db.rows(&format!("select obj_description(to_regclass('{HISTORY_TABLE}'), 'pg_class') as note")).await?;
+        if let Some(began) = note.first().and_then(|r| r.get("note")).and_then(crate::db::extensions_in_note) {
+            return Ok(Some(began));
+        }
+        if read_history(db).await?.iter().any(|r| r.applied) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(platform_extensions_now(db).await?))
+}
+
+/// Which of Supabase's own extensions a Supabase database that `history push` records `files` on
+/// began with: as its history table notes, else those it has in `extensions` but one the files'
+/// first statement creates unconditionally, and any their first statement drops or moves out of
+/// `extensions`.
+async fn extensions_began_adopting(db: &mut Db, files: &[Migration]) -> Result<Option<Vec<String>>, Error> {
+    if api_began(db).await?.is_none() {
+        return Ok(None);
+    }
+    if has_history(db).await? {
+        let note = db.rows(&format!("select obj_description(to_regclass('{HISTORY_TABLE}'), 'pg_class') as note")).await?;
+        if let Some(began) = note.first().and_then(|r| r.get("note")).and_then(crate::db::extensions_in_note) {
+            return Ok(Some(began));
+        }
+    }
+    let touches = extension_first_touches(&files.iter().map(|f| f.sql.as_str()).collect::<Vec<_>>());
+    let touch = |e: &str| touches.iter().find(|(n, _)| n.eq_ignore_ascii_case(e)).map(|(_, t)| *t);
+    let mut began: Vec<String> = platform_extensions_now(db).await?.into_iter().filter(|e| touch(e) != Some(Touch::Created)).collect();
+    for e in crate::catalog::PLATFORM_EXTENSIONS {
+        if matches!(touch(e), Some(Touch::Dropped | Touch::MovedOut)) && !began.iter().any(|b| b == e) {
+            began.push(e.to_string());
+        }
+    }
+    began.sort();
+    Ok(Some(began))
+}
+
+/// The extensions the project's files create that its shadows leave to them: all but one every new
+/// database of the target's platform has there ([`Server::platform_extension`]), which they create
+/// only where it isn't.
+#[cfg(feature = "cli")]
+fn left_extensions(server: &Server, opts: &Options) -> Vec<String> {
+    let unconditional = unconditional_extensions(opts);
+    created_extensions(opts).into_iter().filter(|e| !server.platform_extension(e) || unconditional.contains(e)).collect()
+}
+
+/// The settings a Supabase database began under ([`crate::db::API_SETTINGS`]): as its history table
+/// records them, else as the privileges they decide that its applied migrations leave alone show;
+/// none off Supabase.
+async fn api_began(db: &mut Db) -> Result<Option<[bool; 2]>, Error> {
+    if db.dialect() != Dialect::Postgres || !db.rows(&format!("select ({})::text as on", crate::catalog::platform_names())).await?.first().is_some_and(|r| r.text("on") == "true") {
+        return Ok(None);
+    }
+    if has_history(db).await? {
+        let note = db.rows(&format!("select obj_description(to_regclass('{HISTORY_TABLE}'), 'pg_class') as note")).await?;
+        if let Some(on) = note.first().and_then(|r| r.get("note")).and_then(crate::db::api_settings_in_note) {
+            return Ok(Some(on));
+        }
+    }
+    let changed: Vec<crate::db::ApiPrivilege> = read_history(db).await?.iter().filter(|r| r.applied).flat_map(|r| api_privileges_in(&r.sql)).collect();
+    let current = crate::db::api_privileges(&crate::db::default_privileges(db).await?);
+    Ok(Some(crate::db::api_settings(&current, &changed)))
+}
+
+/// The settings a Supabase database that `history push` records `files` on may have begun under:
+/// the one its history table notes, else each its privileges show, leaving out every one the files
+/// change, which may have run before Reylo recorded any; both, for a setting whose privileges they
+/// change all of. None off Supabase.
+async fn api_began_adopting(db: &mut Db, files: &[Migration]) -> Result<Vec<[bool; 2]>, Error> {
+    let Some(noted) = api_began(db).await? else { return Ok(vec![]) };
+    if has_history(db).await? && db.rows(&format!("select obj_description(to_regclass('{HISTORY_TABLE}'), 'pg_class') as note")).await?.first().and_then(|r| r.get("note")).and_then(crate::db::api_settings_in_note).is_some() {
+        return Ok(vec![noted]);
+    }
+    let changed: Vec<crate::db::ApiPrivilege> = files.iter().map(|f| f.sql.as_str()).chain(read_history(db).await?.iter().filter(|r| r.applied).map(|r| r.sql.as_str()).collect::<Vec<_>>()).flat_map(api_privileges_in).collect();
+    let current = crate::db::api_privileges(&crate::db::default_privileges(db).await?);
+    let shown = crate::db::api_settings_shown(&current, &changed);
+    let choices = |s: Option<bool>| s.map_or(vec![true, false], |s| vec![s]);
+    Ok(choices(shown[0]).into_iter().flat_map(|tables| choices(shown[1]).into_iter().map(move |functions| [tables, functions])).collect())
+}
+
+/// Of `candidates` ([`api_began_adopting`]), the one the database began under: of those under which
+/// the whole of `order` replays and ends as `schema_sql` does, the one whose replay reaches `live`
+/// after the fewest migrations, so that none is taken to have run that a database begun under
+/// another needn't have (a migration that changes data, above all); else the first.
+#[cfg(feature = "cli")]
+async fn api_began_replaying(server: &mut Server, opts: &Options, order: &[Migration], live: &[String], schema_sql: Option<&str>, candidates: &[[bool; 2]]) -> Result<Option<[bool; 2]>, Error> {
+    let texts: Vec<&str> = order.iter().map(|f| f.sql.as_str()).chain(schema_sql).collect();
+    let mut best: Option<(usize, [bool; 2])> = None;
+    for on in candidates {
+        server.began_with(*on);
+        let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
+        let reached = async {
+            let lane = shadows.lane();
+            if shadows.open(lane).await?.is_err() {
+                return Ok::<_, Error>(None);
+            }
+            shadows.taint(lane);
+            let mut first = None;
+            let mut end = Vec::new();
+            for k in 0..=order.len() {
+                end = catalog(shadows.db(lane)).await?;
+                let now = crate::catalog::without_comments(&end);
+                if first.is_none() && crate::catalog::without_extra_children(live, &now) == now {
+                    first = Some(k);
+                }
+                if k < order.len() && run(shadows.db(lane), &order[k]).await.is_err() {
+                    return Ok(None);
+                }
+            }
+            if let Some(sql) = schema_sql {
+                let declared = shadows.lane();
+                shadows.push(declared, [Step::script("schema.sql", sql)]);
+                if !matches!(shadows.lines(declared).await?, Ok(lines) if lines == end) {
+                    return Ok(None);
+                }
+            }
+            Ok(first)
+        }
+        .await;
+        shadows.finish().await;
+        if let Some(k) = reached? {
+            if best.is_none_or(|(b, _)| k < b) {
+                best = Some((k, *on));
+            }
+        }
+    }
+    Ok(best.map(|(_, on)| on).or_else(|| candidates.first().copied()))
+}
+
+/// Notes on the history table how a Supabase database began ([`crate::db::api_settings_note`]).
+async fn note_api_began(db: &mut Db, on: [bool; 2], extensions: &[String]) -> Result<(), Error> {
+    db.exec(&format!("comment on table {HISTORY_TABLE} is {}", crate::db::literal(&crate::db::api_settings_note(on, extensions)))).await
+}
+
+/// The default privileges in `public` a text grants or revokes Supabase's Data API roles, of those
+/// a project's settings decide ([`crate::db::API_SETTINGS`]).
+fn api_privileges_in(text: &str) -> Vec<crate::db::ApiPrivilege> {
+    static CHANGE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"alter default privileges (?:for (?:role|user) ([^;]+?) )?in schema ([^;]+?) (?:grant|revoke) (?:grant option for )?([^;]+?) on (tables|sequences|functions|routines) (?:to|from) ([^;]+?)(?: with grant option| cascade| restrict)?(?: ;|$)").expect("a valid pattern")
+    });
+    // What a comment says changes nothing: matched in the text with comments taken out.
+    let uncommented = crate::sql::tokenize(text, Dialect::Postgres).iter().map(|token| token.text.to_lowercase()).collect::<Vec<_>>().join(" ").replace(" , ", ", ");
+    let names = |list: &str| list.split(',').map(|n| n.trim().trim_matches('"').to_string()).collect::<Vec<_>>();
+    let mut out = Vec::new();
+    for c in CHANGE.captures_iter(&uncommented) {
+        let for_creator = c.get(1).is_none_or(|roles| names(roles.as_str()).iter().any(|r| r == crate::catalog::PLATFORM_CREATOR));
+        if !for_creator || !names(&c[2]).iter().any(|s| s == "public") {
+            continue;
+        }
+        let objects = if &c[4] == "routines" { "functions" } else { &c[4] };
+        let named = names(&c[3]);
+        let all = named.iter().any(|p| p == "all" || p == "all privileges");
+        for (o, privileges) in crate::db::API_SETTINGS.iter().flat_map(|s| s.iter()).filter(|(o, _)| *o == objects) {
+            for privilege in privileges.iter().filter(|p| all || named.iter().any(|n| n.eq_ignore_ascii_case(p))) {
+                for role in names(&c[5]).iter().filter(|r| crate::catalog::PLATFORM_API_ROLES.contains(&r.as_str())) {
+                    out.push((o.to_string(), role.clone(), privilege.to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The extensions a text creates.
 fn extensions_in(text: &str) -> Vec<String> {
     static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
@@ -3062,8 +3470,17 @@ async fn with_shadows(mut db: Db, opts: &Options) -> Result<(Db, Server, usize),
 async fn shadow_server(db: &mut Db, opts: &Options) -> Result<Server, Error> {
     let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
-    server.leave_extensions(created_extensions(opts));
+    if let Some(on) = api_began(db).await? {
+        server.began_with(on);
+    }
+    if let Some(extensions) = extensions_began(db).await? {
+        server.began_with_extensions(extensions);
+    }
+    server.leave_extensions(left_extensions(&server, opts));
     server.leave_schemas(created_schemas(opts));
+    if creates_platform_publication(opts) {
+        server.leave_platform();
+    }
     Ok(server)
 }
 
@@ -3191,10 +3608,14 @@ fn holds_a_schema(lines: &[String]) -> bool {
 fn holds_sql(lines: &[String], new: &NewDatabase) -> bool {
     let platform = |grantee: &str| new.platform && crate::catalog::PLATFORM_ROLES.contains(&grantee);
     holds_a_schema(lines)
+        || new.api_changed
         || lines.iter().any(|l| {
             if let Some(rest) = l.strip_prefix("grant schema ") {
                 let name = crate::catalog::name_at(rest);
-                let given = |grantee: &str, privilege: &str| name == "public" && grantee == "PUBLIC" && (privilege == "USAGE" || (privilege == "CREATE" && new.public_create));
+                // And on a platform's, `postgres`'s `USAGE`, as Supabase grants it.
+                let given = |grantee: &str, privilege: &str| {
+                    name == "public" && ((grantee == "PUBLIC" && (privilege == "USAGE" || (privilege == "CREATE" && new.public_create))) || (new.platform && grantee == crate::catalog::PLATFORM_CREATOR && privilege == "USAGE"))
+                };
                 rest[name.len()..].trim().split(',').filter_map(|g| g.rsplit_once(':')).any(|(grantee, privilege)| !given(grantee, privilege) && !platform(grantee))
             } else if l.starts_with(crate::catalog::DEFAULT_PRIVILEGES) {
                 let tail = l.trim_end_matches(" with grant option");
@@ -3213,6 +3634,9 @@ struct NewDatabase {
     platform: bool,
     /// Whether a new database's `public` grants PUBLIC `CREATE`, as before Postgres 15.
     public_create: bool,
+    /// On Supabase, whether the database changed what its Data API's roles are granted by default
+    /// or on `public` ([`Api::changes`]), which holds no line of its own.
+    api_changed: bool,
 }
 
 #[cfg(feature = "cli")]
@@ -3222,7 +3646,10 @@ async fn new_database(db: &mut Db) -> Result<NewDatabase, Error> {
     }
     let rows = db.rows(&format!("select ({})::text as platform, (current_setting('server_version_num')::int < 150000)::text as public_create", crate::catalog::platform_names())).await?;
     let r = rows.first().ok_or_else(|| Error("no answer".into()))?;
-    Ok(NewDatabase { platform: r.text("platform") == "true", public_create: r.text("public_create") == "true" })
+    let platform = r.text("platform") == "true";
+    let public_create = r.text("public_create") == "true";
+    let api_changed = !Api::read(db, platform).await?.changes.is_empty();
+    Ok(NewDatabase { platform, public_create, api_changed })
 }
 
 /// Whether a migration that fails can leave part of what it did: on MySQL, whose statements commit as
@@ -5294,6 +5721,18 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
     let l = read_lock(opts).unwrap_or_default();
     let order: Vec<Migration> = if lock_free(opts) { files.clone() } else { l.entries.iter().filter_map(|e| files.iter().find(|f| f.name == e.name).cloned()).collect() };
     let live = crate::catalog::without_comments(&catalog(db).await?);
+    // On Supabase, the settings the database began under, which the migrations it ran may have
+    // changed before any was recorded: the one a replay reaches it from, where its privileges can't
+    // tell.
+    let began_extensions = extensions_began_adopting(db, &order).await?;
+    if let Some(extensions) = began_extensions.clone() {
+        server.began_with_extensions(extensions);
+    }
+    let candidates = api_began_adopting(db, &order).await?;
+    let began = if candidates.len() > 1 { api_began_replaying(server, opts, &order, &live, schema_sql.as_deref(), &candidates).await? } else { candidates.first().copied() };
+    if let Some(on) = began {
+        server.began_with(on);
+    }
     let texts: Vec<&str> = order.iter().map(|f| f.sql.as_str()).chain(schema_sql.as_deref()).collect();
     let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     // Everything agrees but the history it writes: the migrations reach schema.sql.
@@ -5498,6 +5937,9 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, init:
     let recorded = &order[..n];
     let before = before_rows;
     ensure_history(db).await?;
+    if let Some(on) = began {
+        note_api_began(db, on, &began_extensions.unwrap_or_default()).await?;
+    }
     // The schema it records, which running nothing leaves as it is, on the last row.
     let lines = catalog(db).await?;
     let value = fingerprint_of(db, &lines).await?;
@@ -6034,7 +6476,17 @@ async fn emptied(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>)
     let counts = table_rows(db).await?;
     let d = db.dialect();
     // The extensions the project's files create go too: they create them again.
-    let mut then: Vec<String> = if d == Dialect::Postgres { created_extensions(opts).iter().map(|x| format!("drop extension if exists {}", crate::db::ident(x))).collect() } else { vec![] };
+    let left = if d == Dialect::Postgres { left_extensions(server, opts) } else { vec![] };
+    let mut then: Vec<String> = left.iter().map(|x| format!("drop extension if exists {}", crate::db::ident(x))).collect();
+    // And Supabase's own it began with go back to how it began, for the migrations that use them:
+    // one a migration moved, back to `extensions`.
+    for e in server.began_extensions().iter().filter(|e| !left.contains(e)) {
+        then.push("create schema if not exists extensions".to_string());
+        then.push(match server.extension_schema(e) {
+            Some(s) if s != "extensions" => format!("alter extension {} set schema extensions", crate::db::ident(e)),
+            _ => format!("create extension if not exists {} with schema extensions", crate::db::ident(e)),
+        });
+    }
     let had_history = has_history(db).await? && !read_history(db).await?.is_empty();
     if has_history(db).await? {
         let forget = format!("delete from {HISTORY_TABLE}");
@@ -6296,14 +6748,26 @@ async fn unneeded_by_history(opts: &Options, files: &[Migration], extensions: Ve
     }
     let mut db = Db::open(opts).await?;
     let server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await;
+    let began = api_began(&mut db).await;
+    let began_extensions = extensions_began(&mut db).await;
     db.close().await;
     let mut server = server?;
     server.copy_default_privileges(!sets_default_privileges(opts));
+    if let Some(on) = began? {
+        server.began_with(on);
+    }
+    if let Some(extensions) = began_extensions? {
+        server.began_with_extensions(extensions);
+    }
+    if creates_platform_publication(opts) {
+        server.leave_platform();
+    }
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).collect();
     // The catalog's lines of a shadow that leaves out `left`, after the migrations or with none run;
     // nothing where they fail.
     let mut lines = async |left: &[String], history: bool| -> Result<Option<BTreeSet<String>>, Error> {
-        server.leave_extensions(created_extensions(opts).into_iter().chain(left.iter().cloned()).collect());
+        let created = left_extensions(&server, opts);
+        server.leave_extensions(created.into_iter().chain(left.iter().cloned()).collect());
         server.leave_schemas(created_schemas(opts));
         let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
         let lane = shadows.lane();
@@ -7743,7 +8207,16 @@ async fn draft_with(opts: &Options, files: &[Migration], schema_sql: &str, targe
     }
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
-    server.leave_extensions(created_extensions(opts).into_iter().chain(added.iter().cloned()).collect());
+    if let Some(on) = api_began(&mut db).await? {
+        server.began_with(on);
+    }
+    if let Some(extensions) = extensions_began(&mut db).await? {
+        server.began_with_extensions(extensions);
+    }
+    if creates_platform_publication(opts) {
+        server.leave_platform();
+    }
+    server.leave_extensions(left_extensions(&server, opts).into_iter().chain(added.iter().cloned()).collect());
     server.leave_schemas(created_schemas(opts));
     left_out_note(&server, log);
     db.close().await;
@@ -8119,10 +8592,17 @@ fn schemas_left_out(schemas: &[String], left: &[String]) -> Problem {
         .fix("Name every schema it's in", &[format!("reylo migrate init {}", flags.join(" ")).as_str()])
 }
 
-/// The extensions of the project's a Postgres database has, by name, lowercase.
+/// The extensions of the project's a Postgres database has, by name, lowercase: none a new database
+/// of its platform's has there ([`crate::catalog::platform_extension`]), which no project makes.
 #[cfg(feature = "cli")]
 async fn project_extensions(db: &mut Db) -> Result<Vec<String>, Error> {
-    let rows = db.rows(&format!("select lower(x.extname) as name from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}", crate::catalog::project_extension("x", "n"))).await?;
+    let rows = db
+        .rows(&format!(
+            "select lower(x.extname) as name from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {} and not {}",
+            crate::catalog::project_extension("x", "n"),
+            crate::catalog::platform_extension("x", "n")
+        ))
+        .await?;
     Ok(rows.iter().map(|r| r.text("name").to_string()).collect())
 }
 
@@ -8164,6 +8644,10 @@ async fn own_sql(db: &mut Db, opts: &Options) -> Result<Result<String, NotOwn>, 
         } else {
             crate::sql::split_statements(&planned, db.dialect()).iter().map(|st| format!("{};", st.text.trim())).collect::<Vec<_>>().join("\n\n")
         };
+        // On Supabase, each object's grants to the Data API's roles, explicitly.
+        let platform = db.rows(&format!("select ({})::text as on", crate::catalog::platform_names())).await?.first().is_some_and(|r| r.text("on") == "true");
+        let granted = Api::read(db, platform).await?.objects(db, true).await?;
+        let sql = if granted.is_empty() { sql } else { format!("{}\n\n{}", sql.trim_end(), granted.iter().map(|g| format!("{g};")).collect::<Vec<_>>().join("\n\n")) };
         let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &[sql.as_str()]).await;
         let lane = shadows.lane();
         shadows.push(lane, [Step::script("schema.sql", &sql)]);
@@ -8323,6 +8807,186 @@ fn without_entries_of(text: &str, owners: &[String], project: &[String]) -> Stri
     out
 }
 
+/// What Supabase's Data API roles are granted in `public` ([`crate::catalog::PLATFORM_API_ROLES`]),
+/// read for SQL that makes the whole database: the grants of `USAGE` on `public`, `postgres`'s default
+/// privileges there, and each table's, sequence's and function's own. Empty off Supabase.
+///
+/// A new Supabase database granted them every privilege on what `postgres` makes in `public`, through
+/// those default privileges, until Supabase stopped exposing new tables to its Data API; a project
+/// may have either, by when it was made or how its local stack is set. So the SQL writes its changes
+/// to the default privileges from the former, before anything it makes, and each object's grants
+/// explicitly: the objects it makes are granted the same on any Supabase database.
+#[derive(Default)]
+struct Api {
+    /// Whether the database is Supabase's.
+    on: bool,
+    /// What the project changed of the default privileges and the grants on `public`, as the
+    /// statements that change them from what a new database started with.
+    changes: Vec<String>,
+    /// The project's settings the database started under ([`crate::db::api_settings`]).
+    settings: [bool; 2],
+}
+
+impl Api {
+    async fn read(db: &mut Db, on: bool) -> Result<Api, Error> {
+        use crate::catalog::{PLATFORM_API_ROLES, PLATFORM_CREATOR};
+        if !on {
+            return Ok(Api::default());
+        }
+        let roles = PLATFORM_API_ROLES.iter().map(|r| crate::db::literal(r)).collect::<Vec<_>>().join(", ");
+        let creator = crate::db::literal(PLATFORM_CREATOR);
+        let mut api = Api { on, ..Api::default() };
+        // Each kind's privileges, each role's of them as a new object is made, and those it has with
+        // grant option.
+        let cells = db
+            .rows(&format!(
+                "select o.objects, quote_ident(r.rolname) as role, r.rolname as raw,
+                   (select string_agg(b.privilege_type, ',' order by b.privilege_type) from aclexplode(acldefault(o.k::\"char\", c.oid)) b where b.grantee = c.oid) as everything,
+                   (select string_agg(x.privilege_type, ',' order by x.privilege_type) from pg_default_acl d, aclexplode(d.defaclacl) x
+                     where d.defaclrole = c.oid and d.defaclnamespace = 'public'::regnamespace and d.defaclobjtype = o.d::\"char\" and x.grantee = r.oid) as has,
+                   (select string_agg(x.privilege_type, ',' order by x.privilege_type) from pg_default_acl d, aclexplode(d.defaclacl) x
+                     where d.defaclrole = c.oid and d.defaclnamespace = 'public'::regnamespace and d.defaclobjtype = o.d::\"char\" and x.grantee = r.oid and x.is_grantable) as grantable
+                 from pg_roles c, pg_roles r, (values ('r', 'r', 'TABLES', 0), ('s', 'S', 'SEQUENCES', 1), ('f', 'f', 'FUNCTIONS', 2)) o(k, d, objects, n)
+                 where c.rolname = {creator} and r.rolname in ({roles})
+                 order by o.n, r.rolname"
+            ))
+            .await?;
+        let list = |r: &crate::db::Row, column: &str| r.get(column).map(|l| l.split(',').map(String::from).collect::<Vec<_>>()).unwrap_or_default();
+        // The settings it started under, which a new database of any project with them has too.
+        let current: Vec<crate::db::ApiPrivilege> = cells.iter().flat_map(|r| list(r, "has").into_iter().map(move |p| (r.text("objects").to_lowercase(), r.text("raw").to_string(), p))).collect();
+        api.settings = crate::db::api_settings(&current, &[]);
+        for r in &cells {
+            let (all, has) = (list(r, "everything"), list(r, "has"));
+            let objects = r.text("objects").to_lowercase();
+            let off: Vec<&str> = crate::db::API_SETTINGS.iter().zip(api.settings).filter(|(_, on)| !on).flat_map(|(s, _)| s.iter()).filter(|(o, _)| *o == objects).flat_map(|(_, p)| p.iter().copied()).collect();
+            let started: Vec<&String> = all.iter().filter(|p| !off.contains(&p.as_str())).collect();
+            let lacks: Vec<&&String> = started.iter().filter(|p| !has.contains(p)).collect();
+            let more: Vec<&String> = has.iter().filter(|p| !started.contains(p)).collect();
+            let head = format!("ALTER DEFAULT PRIVILEGES FOR ROLE {PLATFORM_CREATOR} IN SCHEMA public");
+            if !lacks.is_empty() {
+                let what = if has.is_empty() { "ALL".to_string() } else { lacks.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", ") };
+                api.changes.push(format!("{head} REVOKE {what} ON {} FROM {}", r.text("objects"), r.text("role")));
+            }
+            if !more.is_empty() {
+                api.changes.push(format!("{head} GRANT {} ON {} TO {}", more.iter().map(|p| p.as_str()).collect::<Vec<_>>().join(", "), r.text("objects"), r.text("role")));
+            }
+            let grantable = list(r, "grantable");
+            if !grantable.is_empty() {
+                api.changes.push(format!("{head} GRANT {} ON {} TO {} WITH GRANT OPTION", grantable.join(", "), r.text("objects"), r.text("role")));
+            }
+        }
+        // The grants of `USAGE` on `public` it has taken back.
+        for r in db
+            .rows(&format!(
+                "select quote_ident(r.rolname) as role from pg_roles r where r.rolname in ({creator}, {roles})
+                   and not exists (select 1 from pg_namespace n, aclexplode(n.nspacl) x where n.nspname = 'public' and x.grantee = r.oid and x.privilege_type = 'USAGE')
+                 order by r.rolname"
+            ))
+            .await?
+        {
+            api.changes.push(format!("REVOKE USAGE ON SCHEMA public FROM {}", r.text("role")));
+        }
+        Ok(api)
+    }
+
+    /// Whether pg_dump's statement `s` makes what a new Supabase database had: a grant of `USAGE` on
+    /// `public` to the Data API's roles or `postgres`, or `postgres`'s default privileges in `public`
+    /// for them, which [`Api::changes`] writes the project's changes to.
+    fn as_made(&self, s: &str) -> bool {
+        static GRANTS: LazyLock<Regex> = LazyLock::new(|| {
+            let roles = std::iter::once(crate::catalog::PLATFORM_CREATOR).chain(crate::catalog::PLATFORM_API_ROLES.iter().copied()).collect::<Vec<_>>().join("|");
+            Regex::new(&format!(
+                r"^(?:GRANT USAGE ON SCHEMA public TO (?:{roles})|ALTER DEFAULT PRIVILEGES FOR ROLE {} IN SCHEMA public (?:GRANT|REVOKE) .+ ON (?:TABLES|SEQUENCES|FUNCTIONS) (?:TO|FROM) (?:{roles})(?: WITH GRANT OPTION)?)$",
+                crate::catalog::PLATFORM_CREATOR
+            ))
+            .expect("a valid pattern")
+        });
+        self.on && GRANTS.is_match(s)
+    }
+
+    /// The statements that give each table, sequence and function in `public` its own grants to the
+    /// Data API's roles on any Supabase database, where [`Api::changes`] runs first: after pg_dump's
+    /// grants of what it has (`own` false), what the default privileges give it and it lacks, or
+    /// would give it on a project whose settings grant more, revoked, and a grant option they give
+    /// and it lacks, taken back; or, beside Reylo's own SQL (`own` true), which grants only what they
+    /// don't give and revokes what they give and it lacks, the grants of what they give it, and the
+    /// revokes of what more they would give.
+    async fn objects(&self, db: &mut Db, own: bool) -> Result<Vec<String>, Error> {
+        use crate::catalog::{not_extension, not_platform, pg_not_history, PLATFORM_API_ROLES, PLATFORM_CREATOR};
+        if !self.on {
+            return Ok(vec![]);
+        }
+        let roles = PLATFORM_API_ROLES.iter().map(|r| crate::db::literal(r)).collect::<Vec<_>>().join(", ");
+        // Reylo's own SQL names what is in `public` unqualified, as it does the rest.
+        let name = |schema: &str, object: &str| if own { format!("format('%I', {object})") } else { format!("format('%I.%I', {schema}, {object})") };
+        // What a new database of a project with the settings off would grant them, were they on:
+        // revoked too, since the database the SQL runs on may have them on.
+        let could: Vec<String> = crate::db::API_SETTINGS
+            .iter()
+            .zip(self.settings)
+            .filter(|(_, on)| !on)
+            .flat_map(|(setting, _)| setting.iter())
+            .flat_map(|(objects, privileges)| {
+                let k = match *objects {
+                    "tables" => "r",
+                    "sequences" => "S",
+                    _ => "f",
+                };
+                PLATFORM_API_ROLES.iter().flat_map(move |role| privileges.iter().map(move |p| format!("('{k}'::\"char\", '{role}', '{p}')")))
+            })
+            .collect();
+        let could = if could.is_empty() { "select null::\"char\" as k, null::text as rolname, null::text as p where false".to_string() } else { format!("select * from (values {}) v(k, rolname, p)", could.join(", ")) };
+        let rows = db
+            .rows(&format!(
+                "with made as (
+                   select d.defaclobjtype as k, x.grantee, x.privilege_type as p, x.is_grantable as g from pg_default_acl d, aclexplode(d.defaclacl) x
+                   where d.defaclrole = (select oid from pg_roles where rolname = {creator}) and d.defaclnamespace = 'public'::regnamespace
+                 ), could as ({could}), object as (
+                   select case c.relkind when 'S' then 'S' else 'r' end::\"char\" as k, case c.relkind when 'S' then 's' else 'r' end::\"char\" as a,
+                     case c.relkind when 'S' then 'SEQUENCE' else 'TABLE' end as word, {} as name, coalesce(c.relacl, acldefault(case c.relkind when 'S' then 's' else 'r' end::\"char\", c.relowner)) as acl, c.relowner as owner
+                   from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relkind in ('r', 'p', 'v', 'm', 'f', 'S') and {} and {}
+                   union all
+                   select 'f', 'f', case p.prokind when 'p' then 'PROCEDURE' else 'FUNCTION' end, {} || format('(%s)', pg_get_function_identity_arguments(p.oid)), coalesce(p.proacl, acldefault('f', p.proowner)), p.proowner
+                   from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.prokind in ('f', 'p') and {} and {}
+                 ), cell as (
+                   select o.word, o.name, r.rolname, b.privilege_type as p,
+                     (select count(*) from aclexplode(acldefault(o.a, o.owner)) t where t.grantee = o.owner) as total,
+                     exists (select 1 from aclexplode(o.acl) x where x.grantee = r.oid and x.privilege_type = b.privilege_type) as has,
+                     exists (select 1 from aclexplode(o.acl) x where x.grantee = r.oid and x.privilege_type = b.privilege_type and x.is_grantable) as has_option,
+                     exists (select 1 from made m where m.k = o.k and m.grantee = r.oid and m.p = b.privilege_type) as made,
+                     exists (select 1 from made m where m.k = o.k and m.grantee = r.oid and m.p = b.privilege_type and m.g) as made_option,
+                     exists (select 1 from could c where c.k = o.k and c.rolname = r.rolname::text and c.p = b.privilege_type) as could
+                   from object o cross join pg_roles r cross join lateral aclexplode(acldefault(o.a, o.owner)) b
+                   where r.rolname in ({roles}) and b.grantee = o.owner
+                 ), statement as (
+                   select 0 as n, 'GRANT' as verb, word, name, rolname, p, total from cell where {own} and has and made
+                   union all select 1, 'REVOKE', word, name, rolname, p, total from cell where not has and ((not {own} and (made or could)) or ({own} and could and not made))
+                   union all select 2, 'REVOKE GRANT OPTION FOR', word, name, rolname, p, total from cell where not {own} and made_option and has and not has_option
+                 ), by_role as (
+                   select n, verb, word, name, rolname, case when count(*) = max(total) then 'ALL' else string_agg(p, ', ' order by p) end as ps from statement group by n, verb, word, name, rolname
+                 )
+                 select format('%s %s ON %s %s %s %s', verb, ps, word, name, case when verb = 'GRANT' then 'TO' else 'FROM' end, string_agg(quote_ident(rolname), ', ' order by rolname)) as s
+                 from by_role group by n, verb, word, name, ps order by name, word, n, 1",
+                name("n.nspname", "c.relname"),
+                not_extension("pg_class", "c"),
+                pg_not_history("c"),
+                name("n.nspname", "p.proname"),
+                not_extension("pg_proc", "p"),
+                not_platform("p.proowner"),
+                creator = crate::db::literal(PLATFORM_CREATOR),
+            ))
+            .await?;
+        // Reylo's own SQL is lowercase but for names.
+        let lower = |s: &str| {
+            let (verb, rest) = s.split_once(" ON ").unwrap_or((s, ""));
+            let (word, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+            let (object, roles) = rest.rsplit_once(if verb.starts_with("GRANT") { " TO " } else { " FROM " }).unwrap_or((rest, ""));
+            format!("{} on {} {object} {} {roles}", verb.to_lowercase(), word.to_lowercase(), if verb.starts_with("GRANT") { "to" } else { "from" })
+        };
+        Ok(rows.iter().map(|r| if own { lower(r.text("s")) } else { r.text("s").to_string() }).collect())
+    }
+}
+
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
         Dialect::Postgres => {
@@ -8377,10 +9041,14 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             // `pg_catalog` is the platform's (Azure's `pgaadauth`); one the project put in `pg_catalog`
             // is its own, made there, and no `create schema` names `pg_catalog`; one in a schema of the
             // project's is its own, whoever owns it.
+            // On Supabase, what a new database there has is the platform's, which no file makes: its
+            // extensions in `extensions`, its publication, and the grants its Data API's roles have.
+            let platform = db.rows(&format!("select ({})::text as on", crate::catalog::platform_names())).await?.first().is_some_and(|r| r.text("on") == "true");
             for r in db
                 .rows(&format!(
-                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {}",
-                    crate::catalog::project_extension("x", "n")
+                    "select quote_ident(x.extname) as name, quote_ident(n.nspname) as schema, n.nspname as raw from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname <> 'plpgsql' and {} and not {}",
+                    crate::catalog::project_extension("x", "n"),
+                    crate::catalog::platform_extension("x", "n")
                 ))
                 .await?
             {
@@ -8412,6 +9080,9 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));
             }
+            let api = Api::read(db, platform).await?;
+            // What the project changed of them, before anything it makes, which is made as they say.
+            kept.extend(api.changes.iter().cloned());
             // Foreign data wrappers and servers, which are in no schema, so pg_dump writes them only for a
             // whole database: what the dumped schemas' foreign tables are made on, an extension's and the
             // platform's own aside, each with its grants, an owner that isn't the runner, and its comment.
@@ -8462,7 +9133,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             for statement in crate::sql::split_statements(&text, Dialect::Postgres) {
                 let Some(s) = without_platform_column_options(&statement.text) else { continue };
                 let s = s.as_str();
-                if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") || AS_MADE.contains(&s) {
+                if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") || AS_MADE.contains(&s) || api.as_made(s) {
                     continue;
                 }
                 if s.starts_with("CREATE FOREIGN TABLE ") {
@@ -8478,6 +9149,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 }
             }
             kept.append(&mut foreign);
+            kept.extend(api.objects(db, false).await?);
             // Event triggers and publications, which are in no schema, so pg_dump writes neither for a
             // schema (and publications not at all here): the project's, which are compared, after the
             // functions and tables they name, an extension's and the platform's own aside.
@@ -8512,15 +9184,44 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                       null,
                       case when p.pubowner <> {me} then format('ALTER PUBLICATION %I OWNER TO %I', p.pubname, pg_get_userbyid(p.pubowner)) end,
                       case when obj_description(p.oid, 'pg_publication') is not null then format('COMMENT ON PUBLICATION %I IS %L', p.pubname, obj_description(p.oid, 'pg_publication')) end
-                    from pg_publication p where {}
+                    from pg_publication p where {} and not ({} and p.pubname = {})
                     order by k, name",
                     crate::catalog::not_extension("pg_event_trigger", "et"),
                     crate::catalog::not_platform("et.evtowner"),
-                    crate::catalog::not_platform("p.pubowner")
+                    crate::catalog::not_platform("p.pubowner"),
+                    crate::catalog::platform_names(),
+                    crate::db::literal(crate::catalog::PLATFORM_PUBLICATION)
                 ))
                 .await?
             {
                 kept.extend(["s", "enabled", "owner", "comment"].iter().filter_map(|k| r.get(k).map(String::from)));
+            }
+            // The platform's publication is in every database of the platform's: what the project
+            // publishes through it is added to it, as Supabase's docs enable Realtime on a table.
+            if platform {
+                let in_schemas = if version >= 150000 {
+                    "union all select 1, format('ALTER PUBLICATION %I ADD TABLES IN SCHEMA %I', p.pubname, n.nspname), n.nspname from pg_publication p join pg_publication_namespace pn on pn.pnpubid = p.oid join pg_namespace n on n.oid = pn.pnnspid where p.pubname = {name}"
+                } else {
+                    ""
+                };
+                let generated = if version >= 180000 { "case when p.pubgencols = 's' then 'publish_generated_columns = stored' end" } else { "null" };
+                for r in db
+                    .rows(&format!(
+                        "select 0 as k, format('ALTER PUBLICATION %I ADD TABLE ONLY %I.%I', p.pubname, n.nspname, c.relname) || {columns} as s, format('%I.%I', n.nspname, c.relname) as name
+                        from pg_publication p join pg_publication_rel pr on pr.prpubid = p.oid join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where p.pubname = {name}
+                        {}
+                        union all select 2, format('ALTER PUBLICATION %I SET (%s)', p.pubname, o.set), '' from pg_publication p, lateral (select concat_ws(', ',
+                            case when not (p.pubinsert and p.pubupdate and p.pubdelete and p.pubtruncate) then format('publish = %L', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end)) end,
+                            case when p.pubviaroot then 'publish_via_partition_root = true' end, {generated}) as set) o
+                          where p.pubname = {name} and o.set <> ''
+                        order by k, name",
+                        in_schemas.replace("{name}", &crate::db::literal(crate::catalog::PLATFORM_PUBLICATION)),
+                        name = crate::db::literal(crate::catalog::PLATFORM_PUBLICATION)
+                    ))
+                    .await?
+                {
+                    kept.push(r.text("s").to_string());
+                }
             }
             let mut joined = kept.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n\n");
             // What the project made on a platform's tables (Supabase's `auth.users`, `storage.objects`),
@@ -8669,12 +9370,25 @@ async fn init_in(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i32
     let left = left_out(&mut db, schemas).await;
     let roles = named_roles(&mut db).await;
     let new = new_database(&mut db).await;
+    let realtime = platform_publication_of_all_tables(&mut db).await;
     db.close().await;
     let problems = problems?;
     let mut roles = roles?;
     let new = new?;
     if !problems.is_empty() {
         return Ok(refuse(&problems, log));
+    }
+    // Supabase's publication made to publish every table, which no migration can make it do on
+    // another Supabase database: the refusal names its tables.
+    if let Some(tables) = realtime? {
+        let name = crate::catalog::PLATFORM_PUBLICATION;
+        let (tables, with) = tables;
+        let create = format!("create publication {name}{}{with}", if tables.is_empty() { String::new() } else { format!(" for table {}", tables.join(", ")) });
+        let republish = format!("reylo run {} {}", shell_word(&format!("drop publication {name}")), shell_word(&create));
+        let problem = Problem::new("platform-publication-all-tables", format!("This database's {name} publishes every table, which no migration can make it do"))
+            .note(format!("Every Supabase database has {name} publishing none, and alter publication can't make it publish all tables. Name the tables it publishes instead: a table made later joins it when a migration adds it."))
+            .fix("Publish this database's tables by name, then start again", &[republish.as_str(), "reylo migrate init"]);
+        return Ok(refuse(&[problem], log));
     }
     let left = left?;
     if !left.is_empty() {
@@ -8748,6 +9462,31 @@ async fn init_in(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i32
         log(&note(format!("{INIT} names {named}: make {} on each new server before it runs there, since a migration may not", if roles.len() == 1 { "it" } else { "them" })));
     }
     Ok(code)
+}
+
+/// On a Supabase database whose `supabase_realtime` publishes every table, the tables it publishes
+/// now, each with its schema, and the options it is made with, as `create publication` writes them
+/// after its tables; none otherwise.
+#[cfg(feature = "cli")]
+async fn platform_publication_of_all_tables(db: &mut Db) -> Result<Option<(Vec<String>, String)>, Error> {
+    if db.dialect() != Dialect::Postgres {
+        return Ok(None);
+    }
+    let name = crate::db::literal(crate::catalog::PLATFORM_PUBLICATION);
+    let all = db
+        .rows(&format!(
+            "select concat_ws(', ',
+               case when not (p.pubinsert and p.pubupdate and p.pubdelete and p.pubtruncate) then format('publish = %L', concat_ws(', ', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end)) end,
+               case when p.pubviaroot then 'publish_via_partition_root = true' end,
+               case when (to_jsonb(p) ->> 'pubgencols') = 's' then 'publish_generated_columns = stored' end) as options
+             from pg_publication p where p.pubname = {name} and p.puballtables and {}",
+            crate::catalog::platform_names()
+        ))
+        .await?;
+    let Some(options) = all.first().map(|r| r.text("options").to_string()) else { return Ok(None) };
+    let rows = db.rows(&format!("select format('%I.%I', schemaname, tablename) as t from pg_publication_tables where pubname = {name} order by 1")).await?;
+    let with = if options.is_empty() { String::new() } else { format!(" with ({options})") };
+    Ok(Some((rows.iter().map(|r| r.text("t").to_string()).collect(), with)))
 }
 
 /// The roles the database names, as an owner, a grantee or a policy's role, that a new server
@@ -10558,6 +11297,70 @@ mod tests {
         more.push("column public.t.x integer".into());
         assert_eq!(sides(&more, &two), (true, false));
         assert_eq!(sides(&[two.clone(), vec!["column public.t.x integer".into()]].concat(), &three), (true, true));
+    }
+
+    #[test]
+    fn an_extension_begun_without_is_read_from_its_first_statement() {
+        let begun = |texts: &[&str]| extensions_begun_without(texts);
+        assert_eq!(begun(&["create extension pg_stat_statements with schema extensions;"]), ["pg_stat_statements"]);
+        assert!(begun(&["create extension if not exists \"uuid-ossp\";"]).is_empty());
+        assert!(begun(&["create extension if not exists \"uuid-ossp\" with schema extensions;"]).is_empty());
+        assert!(begun(&["create extension if not exists \"uuid-ossp\" with schema public;", "create table t (id uuid default extensions.uuid_generate_v4());"]).is_empty());
+        // A drop first, of any name its list holds, says it began with it.
+        assert!(begun(&["drop extension pg_stat_statements, \"uuid-ossp\" cascade;", "create extension \"uuid-ossp\" with schema extensions;"]).is_empty());
+        assert!(begun(&["insert into t values ('create extension pgcrypto');"]).is_empty());
+        // As does moving it out of `extensions` first; updating it says nothing of where it was.
+        assert_eq!(extension_first_touches(&["alter extension \"uuid-ossp\" set schema public;", "drop extension \"uuid-ossp\";"]), [("uuid-ossp".to_string(), Touch::MovedOut)]);
+        assert!(extension_first_touches(&["alter extension \"uuid-ossp\" update;", "alter extension pgcrypto set schema extensions;"]).is_empty());
+    }
+
+    #[test]
+    fn creating_supabases_publication_is_read_as_sql() {
+        let first = |text: &str| platform_publication_created_first(&[text]);
+        assert_eq!(first("create publication supabase_realtime;"), Some(true));
+        assert_eq!(first("CREATE PUBLICATION \"supabase_realtime\" FOR ALL TABLES;"), Some(true));
+        assert_eq!(first("insert into snippets values ('create publication supabase_realtime;');"), None);
+        assert_eq!(first("-- create publication supabase_realtime\nselect 1;"), None);
+        assert_eq!(first("create publication \"Supabase_Realtime\";"), None);
+        assert_eq!(first("create publication supabase_realtime_messages;"), None);
+        assert_eq!(first("create publication \"\"\"supabase_realtime\"\"\";"), None);
+        // Dropped first, of any name its list holds, it is made again rather than made twice.
+        assert_eq!(first("drop publication if exists other, supabase_realtime;\ncreate publication supabase_realtime for all tables;"), Some(false));
+        assert_eq!(platform_publication_created_first(&["drop publication supabase_realtime;", "create publication supabase_realtime;"]), Some(false));
+    }
+
+    #[test]
+    fn a_change_to_supabases_default_grants_is_read_from_the_sql() {
+        let sql = "-- alter default privileges in schema public revoke all on tables from anon;\nALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public REVOKE SELECT, INSERT ON TABLES FROM \"anon\", authenticated;\nalter default privileges in schema api revoke select on tables from anon;\nalter default privileges for role other in schema public revoke select on tables from anon;\nalter default privileges in schema public grant all on sequences to service_role with grant option;\n";
+        let read = api_privileges_in(sql);
+        let changed: Vec<(&str, &str, &str)> = read.iter().map(|(o, r, p)| (o.as_str(), r.as_str(), p.as_str())).collect();
+        assert_eq!(
+            changed,
+            [("tables", "anon", "INSERT"), ("tables", "authenticated", "INSERT"), ("tables", "anon", "SELECT"), ("tables", "authenticated", "SELECT"), ("sequences", "service_role", "SELECT"), ("sequences", "service_role", "USAGE")]
+        );
+    }
+
+    #[test]
+    fn a_new_objects_grants_from_default_privileges_are_not_listed() {
+        let lines = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let defaults = ["default privileges in schema public grant insert on tables to anon", "default privileges in schema public grant select on tables to anon", "default privileges grant usage on sequences to anon"];
+        let came = lines(&[
+            "table public.posts",
+            "column public.posts.id integer not null",
+            "grant public.posts anon:INSERT,anon:SELECT,reporting:SELECT",
+            "grant sequence of identity public.posts.id anon:USAGE",
+            "grant public.old anon:SELECT",
+            "table api.events",
+            "grant api.events anon:SELECT",
+        ]);
+        let after: Vec<String> = came.iter().cloned().chain(defaults.iter().map(|d| d.to_string())).collect();
+        let before = lines(&["table public.old", "table api.events"]);
+        // What the defaults give a new table, in its schema or everywhere, isn't listed; what else it
+        // grants is, and so is a grant on a table both sides have.
+        assert_eq!(
+            without_made_grants(&came, &after, &before),
+            lines(&["table public.posts", "column public.posts.id integer not null", "grant public.posts reporting:SELECT", "grant public.old anon:SELECT", "table api.events", "grant api.events anon:SELECT"])
+        );
     }
 
     #[test]

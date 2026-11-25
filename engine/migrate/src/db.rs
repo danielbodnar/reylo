@@ -1167,6 +1167,122 @@ async fn owned_by_platform(target: &mut Db, admin: &tokio_postgres::Client, url:
     Ok(Owned { statements: vec![], extensions, role: None, note: Some(note) })
 }
 
+/// A privilege one of Supabase's Data API roles may have by default on what `postgres` makes in
+/// `public`: `(objects, role, privilege)`, as `("tables", "anon", "SELECT")`.
+pub(crate) type ApiPrivilege = (String, String, String);
+
+/// The privileges a Supabase project's settings grant its Data API's roles by default, or not, each
+/// set together: whether new tables are exposed to the API (reading and writing a table's rows, and
+/// using a sequence), and whether new functions are. Supabase turned the first off for new projects
+/// in 2026 and for every hosted project later, while its local stack keeps it on unless told
+/// otherwise. A new Supabase database grants every other privilege on what `postgres` makes in
+/// `public` either way.
+pub(crate) const API_SETTINGS: [&[(&str, &[&str])]; 2] = [&[("tables", &["DELETE", "INSERT", "SELECT", "UPDATE"]), ("sequences", &["SELECT", "USAGE"])], &[("functions", &["EXECUTE"])]];
+
+/// For each of [`API_SETTINGS`], whether a database started with it on: read from the privileges it
+/// grants now (`current`), all but those a project's SQL changes (`changed`), as most of the rest
+/// grant or don't; on where it changes them all, as every new Supabase database once started.
+pub(crate) fn api_settings(current: &[ApiPrivilege], changed: &[ApiPrivilege]) -> [bool; 2] {
+    api_settings_shown(current, changed).map(|shown| shown.unwrap_or(true))
+}
+
+/// As [`api_settings`], but none for a setting all of whose privileges `changed` holds, which the
+/// privileges left say nothing of.
+pub(crate) fn api_settings_shown(current: &[ApiPrivilege], changed: &[ApiPrivilege]) -> [Option<bool>; 2] {
+    API_SETTINGS.map(|setting| {
+        let (mut on, mut off) = (0, 0);
+        for (objects, privileges) in setting {
+            for role in crate::catalog::PLATFORM_API_ROLES {
+                for privilege in privileges.iter() {
+                    let one = (objects.to_string(), role.to_string(), privilege.to_string());
+                    if changed.contains(&one) {
+                        continue;
+                    }
+                    if current.contains(&one) {
+                        on += 1;
+                    } else {
+                        off += 1;
+                    }
+                }
+            }
+        }
+        (on + off > 0).then_some(on >= off)
+    })
+}
+
+/// The note on the history table that records how a Supabase database began: under which settings
+/// ([`API_SETTINGS`]), and with which of Supabase's own extensions
+/// ([`crate::catalog::PLATFORM_EXTENSIONS`]), which nothing else shows once its migrations have
+/// changed them.
+pub(crate) fn api_settings_note(on: [bool; 2], extensions: &[String]) -> String {
+    let said = |on: bool| if on { "exposed" } else { "not exposed" };
+    let with = if extensions.is_empty() { "none of Supabase's extensions".to_string() } else { format!("Supabase's extensions {}", extensions.join(", ")) };
+    format!("Reylo Migrate's history. This database began with Supabase's Data API settings: new tables {}, new functions {}. It began with {with}.", said(on[0]), said(on[1]))
+}
+
+/// The extensions of Supabase's a history table's `note` records the database began with
+/// ([`api_settings_note`]).
+pub(crate) fn extensions_in_note(note: &str) -> Option<Vec<String>> {
+    if note.contains("It began with none of Supabase's extensions.") {
+        return Some(vec![]);
+    }
+    let rest = note.split_once("It began with Supabase's extensions ")?.1;
+    let list = rest.split_once('.')?.0;
+    Some(list.split(", ").map(String::from).collect())
+}
+
+/// The settings a history table's `note` records ([`api_settings_note`]).
+pub(crate) fn api_settings_in_note(note: &str) -> Option<[bool; 2]> {
+    let read = |what: &str| {
+        if note.contains(&format!("new {what} not exposed")) {
+            Some(false)
+        } else if note.contains(&format!("new {what} exposed")) {
+            Some(true)
+        } else {
+            None
+        }
+    };
+    Some([read("tables")?, read("functions")?])
+}
+
+/// What a new Supabase database starts with for its Data API, under the settings `on`
+/// ([`api_settings`]), as the statements that make it: `postgres`'s default privileges in `public`
+/// for the API's roles, and the grants of `USAGE` on `public` to them and to `postgres`. One
+/// statement each, so that a server without one of the roles leaves out only it.
+pub(crate) fn platform_defaults(on: [bool; 2]) -> (Vec<String>, Vec<String>) {
+    use crate::catalog::{PLATFORM_API_ROLES, PLATFORM_CREATOR};
+    let head = format!("alter default privileges for role {PLATFORM_CREATOR} in schema public");
+    let mut privileges: Vec<String> = Vec::new();
+    for role in PLATFORM_API_ROLES {
+        for objects in ["tables", "sequences", "functions"] {
+            privileges.push(format!("{head} grant all on {objects} to {role}"));
+        }
+        for (setting, on) in API_SETTINGS.iter().zip(on) {
+            for (objects, taken) in setting.iter().filter(|_| !on) {
+                privileges.push(format!("{head} revoke {} on {objects} from {role}", taken.join(", ").to_lowercase()));
+            }
+        }
+    }
+    let grants = std::iter::once(&PLATFORM_CREATOR).chain(PLATFORM_API_ROLES).map(|role| format!("grant usage on schema public to {role}")).collect();
+    (privileges, grants)
+}
+
+/// What `statements`, each one of [`default_privileges`], grant the Data API's roles on what
+/// `postgres` makes in `public`: the role that runs the migrations is `postgres` on Supabase, whose
+/// own name none of its statements, or another role named for `postgres`.
+pub(crate) fn api_privileges(statements: &[String]) -> Vec<ApiPrivilege> {
+    use crate::catalog::{PLATFORM_API_ROLES, PLATFORM_CREATOR};
+    statements
+        .iter()
+        .filter_map(|statement| {
+            let rest = statement.strip_prefix("alter default privileges in schema public grant ").or_else(|| statement.strip_prefix(&format!("alter default privileges for role {PLATFORM_CREATOR} in schema public grant ")))?;
+            let (privilege, rest) = rest.split_once(" on ")?;
+            let (objects, role) = rest.trim_end_matches(" with grant option").split_once(" to ")?;
+            (PLATFORM_API_ROLES.contains(&role) && ["tables", "sequences", "functions"].contains(&objects)).then(|| (objects.to_string(), role.to_string(), privilege.to_uppercase()))
+        })
+        .collect()
+}
+
 /// Gives a shadow's session the target's word on whether it is a platform's (`settings`, the target
 /// database's own, carry [`crate::catalog::PLATFORM_SCHEMAS_SETTING`]).
 #[cfg(feature = "cli")]
@@ -1267,6 +1383,22 @@ pub enum Server {
         /// shadow but where SQL is written to make the database whole.
         schema_grants: Vec<String>,
         copy_schema_grants: bool,
+        /// On a Supabase target, what a shadow is given where it takes none of the target's default
+        /// privileges or grants on its schemas: the default privileges `postgres` gives the Data
+        /// API's roles in `public` as the target began with them, under its project's settings
+        /// ([`API_SETTINGS`], [`Server::began_with`]), which the project's SQL changes from there;
+        /// and, for SQL written to make the database whole, their grants on `public` as a new
+        /// database has them.
+        platform_privileges: Vec<String>,
+        platform_schema_grants: Vec<String>,
+        /// Whether the target is Supabase's.
+        platform: bool,
+        /// Which of Supabase's own extensions the target began with, where that is known: what a
+        /// shadow has of them, in `extensions`, whatever the target has now.
+        began_extensions: Option<Vec<String>>,
+        /// Whether each shadow is given the platform's publication, empty, as the target was:
+        /// Supabase's `supabase_realtime`, which a project's SQL adds its tables to.
+        publication: bool,
     },
     Mysql {
         admin: mysql_async::Conn,
@@ -1399,7 +1531,31 @@ impl Server {
                 let schemas: Vec<String> = std::iter::once("public".to_string()).chain(extensions.iter().map(|(_, s)| s.clone())).filter(|s| !platform.contains(s)).collect();
                 let schema_grants = schema_grants(target, &schemas).await?;
                 let owned = owned_by_platform(target, &admin, url, version).await?;
-                Ok(Server::Postgres { admin, url: server_url.to_string(), create, locale: unknown_locale, settings, privileges, copy_privileges: true, extensions, leave: vec![], environment, environment_role, owned, schema_grants, copy_schema_grants: true })
+                // On Supabase, the default privileges its Data API's roles have, the target's own,
+                // which Supabase sets for every project as it chooses; and its publication.
+                let platform_privileges = if names { platform_defaults(api_settings(&api_privileges(&privileges), &[])).0 } else { vec![] };
+                let publication = names && !target.rows(&format!("select 1 from pg_publication where pubname = {}", literal(crate::catalog::PLATFORM_PUBLICATION))).await?.is_empty();
+                Ok(Server::Postgres {
+                    admin,
+                    url: server_url.to_string(),
+                    create,
+                    locale: unknown_locale,
+                    settings,
+                    privileges,
+                    copy_privileges: true,
+                    extensions,
+                    leave: vec![],
+                    environment,
+                    environment_role,
+                    owned,
+                    schema_grants,
+                    copy_schema_grants: true,
+                    platform_privileges,
+                    platform_schema_grants: vec![],
+                    platform: names,
+                    began_extensions: None,
+                    publication,
+                })
             }
             Dialect::Mysql => {
                 let admin = crate::db::open_mysql(&with_database(server_url, "")).await?;
@@ -1456,7 +1612,9 @@ impl Server {
     /// privileges) but not its database settings, which a copy does not take. The lock named after
     /// it is held until it is dropped; a copy that fails releases it.
     pub(crate) async fn pg_shadow(&mut self, template: Option<&str>) -> Result<Shadow, Error> {
-        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, copy_schema_grants, .. } = self else { return Err(Error("not a Postgres server".into())) };
+        let Server::Postgres { admin, url, create, locale, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, owned, schema_grants, copy_schema_grants, platform_privileges, platform_schema_grants, publication, began_extensions, .. } = self else {
+            return Err(Error("not a Postgres server".into()));
+        };
         let name = random_name();
         admin.batch_execute(&format!("select pg_advisory_lock(hashtextextended('{name}', 0))")).await.map_err(pg_error)?;
         let made = async {
@@ -1505,9 +1663,11 @@ impl Server {
         let mut db = Db::Postgres(client);
         // For the session too, where the database may not take the setting from the role connected.
         mark_platform_names(&mut db, settings).await;
-        if *copy_privileges && template.is_none() {
+        if template.is_none() {
             // A role or schema the shadow's server lacks leaves that one out; the comparison says what follows.
-            for statement in privileges.iter() {
+            // Where the project's SQL sets default privileges, it sets them from those a new database
+            // of the platform's has, which are none but on Supabase.
+            for statement in if *copy_privileges { privileges.iter() } else { platform_privileges.iter() } {
                 let _ = db.exec(statement).await;
             }
         }
@@ -1519,7 +1679,17 @@ impl Server {
             // the replay, which says so.
             // The extensions in a schema of the project's first, which the platform's own may use;
             // those in a platform's schema after it is made, as the platform made it.
-            let copied: Vec<&(String, String)> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase()) && !owned.extensions.iter().any(|(o, _)| o == e)).collect();
+            // Supabase's own, where it is known which the target began with, as it began.
+            // One it began without that it has elsewhere, where no migration made it, is the
+            // environment's there, and copied; one it began with that is elsewhere now was moved there
+            // since, which the migrations replay.
+            let began = |e: &str| began_extensions.iter().flatten().any(|b| b.eq_ignore_ascii_case(e));
+            let begun = |e: &str, s: &str| began_extensions.is_some() && crate::catalog::PLATFORM_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)) && (s == "extensions" || began(e));
+            let copied: Vec<&(String, String)> = extensions.iter().filter(|(e, s)| !leave.contains(&e.to_lowercase()) && !owned.extensions.iter().any(|(o, _)| o == e) && !begun(e, s)).collect();
+            for e in began_extensions.iter().flatten().filter(|e| !leave.contains(&e.to_lowercase())) {
+                let _ = db.exec("create schema if not exists extensions").await;
+                let _ = db.exec(&format!("create extension if not exists {} with schema extensions", ident(e))).await;
+            }
             let platform_schema = |schema: &str| environment.iter().chain(owned.statements.iter()).any(|st| st.trim_start().to_ascii_lowercase().starts_with(&format!("create schema {}", schema.to_ascii_lowercase())));
             for (extension, schema) in copied.iter().filter(|(_, s)| !platform_schema(s)) {
                 let _ = db.exec(&format!("create schema if not exists {}", ident(schema))).await;
@@ -1528,7 +1698,7 @@ impl Server {
             for (_, schema) in owned.extensions.iter().filter(|(e, s)| owned.role.is_some() && !leave.contains(&e.to_lowercase()) && !platform_schema(s) && s != "pg_catalog") {
                 let _ = db.exec(&format!("create schema if not exists {}", ident(schema))).await;
             }
-            for statement in schema_grants.iter().filter(|_| *copy_schema_grants) {
+            for statement in if *copy_schema_grants { schema_grants.iter() } else { platform_schema_grants.iter() } {
                 let _ = db.exec(statement).await;
             }
             if let (Some(role), false) = (environment_role.as_deref(), environment.is_empty()) {
@@ -1557,6 +1727,9 @@ impl Server {
             }
             for (extension, schema) in copied.iter().filter(|(_, s)| platform_schema(s)) {
                 let _ = db.exec(&format!("create extension if not exists {} with schema {}", ident(extension), ident(schema))).await;
+            }
+            if *publication {
+                let _ = db.exec(&format!("create publication {}", ident(crate::catalog::PLATFORM_PUBLICATION))).await;
             }
         }
         Ok(Shadow { db, name })
@@ -1626,6 +1799,38 @@ impl Server {
         }
     }
 
+    /// Whether the extension `name` is one every new database of the target's platform has where the
+    /// target has it ([`crate::catalog::PLATFORM_EXTENSIONS`]): a shadow has it as the target does,
+    /// where the project's files create it only if it isn't there, and a reset leaves it.
+    pub fn platform_extension(&self, name: &str) -> bool {
+        let Server::Postgres { extensions, platform: true, began_extensions, .. } = self else { return false };
+        if let Some(began) = began_extensions {
+            return began.iter().any(|b| b.eq_ignore_ascii_case(name));
+        }
+        crate::catalog::PLATFORM_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(name)) && extensions.iter().any(|(e, s)| e.eq_ignore_ascii_case(name) && s == "extensions")
+    }
+
+    /// The schema the target has an extension in, by name.
+    pub fn extension_schema(&self, name: &str) -> Option<&str> {
+        let Server::Postgres { extensions, .. } = self else { return None };
+        extensions.iter().find(|(e, _)| e.eq_ignore_ascii_case(name)).map(|(_, s)| s.as_str())
+    }
+
+    /// Which of Supabase's own extensions the target began with, where that is known.
+    pub fn began_extensions(&self) -> Vec<String> {
+        match self {
+            Server::Postgres { began_extensions: Some(began), platform: true, .. } => began.clone(),
+            _ => vec![],
+        }
+    }
+
+    /// Which of Supabase's own extensions the target began with, which its shadows begin with.
+    pub fn began_with_extensions(&mut self, names: Vec<String>) {
+        if let Server::Postgres { began_extensions, platform: true, .. } = self {
+            *began_extensions = Some(names);
+        }
+    }
+
     /// The schemas the project's own files create: an extension the target keeps in one of them (one
     /// the project once created there, and no longer does) is left out of a shadow too, whose
     /// `create schema` it would otherwise stop.
@@ -1643,13 +1848,36 @@ impl Server {
         }
     }
 
+    /// Shadows leave what a new database of the platform's has to the project's own files, which
+    /// make it, as a project begun before Reylo took it for the platform's did: its publication, and
+    /// its default privileges and grants for the Data API.
+    pub fn leave_platform(&mut self) {
+        if let Server::Postgres { publication, platform_privileges, platform_schema_grants, platform, .. } = self {
+            *publication = false;
+            *platform = false;
+            platform_privileges.clear();
+            platform_schema_grants.clear();
+        }
+    }
+
+    /// The settings the target began under ([`API_SETTINGS`]), which its shadows begin under.
+    pub fn began_with(&mut self, on: [bool; 2]) {
+        if let Server::Postgres { platform_privileges, platform: true, .. } = self {
+            *platform_privileges = platform_defaults(on).0;
+        }
+    }
+
     /// Shadows take none of the target's default privileges or grants on its schemas: for SQL written
     /// to make the database whole (init's, introspect's), which makes them itself. Which of them a new
-    /// database on the server has already, no name tells, so they are all the SQL's.
+    /// database on the server has already, no name tells, so they are all the SQL's, but on Supabase,
+    /// whose new databases have their own, which shadows take.
     pub fn copy_no_privileges(&mut self) {
-        if let Server::Postgres { copy_privileges, copy_schema_grants, .. } = self {
+        if let Server::Postgres { copy_privileges, copy_schema_grants, platform_schema_grants, platform, .. } = self {
             *copy_privileges = false;
             *copy_schema_grants = false;
+            if *platform {
+                *platform_schema_grants = platform_defaults([true, true]).1;
+            }
         }
     }
 
@@ -1775,6 +2003,30 @@ pub(crate) async fn default_privileges(target: &mut Db) -> Result<Vec<String>, E
 #[cfg(test)]
 mod url_tests {
     use super::*;
+
+    #[test]
+    fn a_supabase_databases_settings_are_read_from_what_its_sql_leaves_alone() {
+        let all = |objects: &str, privileges: &[&str], roles: &[&str]| -> Vec<ApiPrivilege> { roles.iter().flat_map(|r| privileges.iter().map(move |p| (objects.to_string(), r.to_string(), p.to_string()))).collect() };
+        let roles = ["anon", "authenticated", "service_role"];
+        let tables = ["DELETE", "INSERT", "SELECT", "UPDATE"];
+        let exposed: Vec<ApiPrivilege> = [all("tables", &tables, &roles), all("sequences", &["SELECT", "USAGE"], &roles), all("functions", &["EXECUTE"], &roles)].concat();
+        assert_eq!(api_settings(&exposed, &[]), [true, true]);
+        assert_eq!(api_settings(&all("functions", &["EXECUTE"], &roles), &[]), [false, true]);
+        // Taken from anon alone, the rest say how it started; and a change to anon alone says nothing.
+        let hidden_from_anon: Vec<ApiPrivilege> = exposed.iter().filter(|(_, r, _)| r != "anon").cloned().collect();
+        assert_eq!(api_settings(&hidden_from_anon, &[]), [true, true]);
+        assert_eq!(api_settings(&all("tables", &["SELECT"], &["authenticated"]), &all("tables", &["SELECT"], &["authenticated"])), [false, false]);
+        // Every one changed says nothing either: it started as Supabase's projects once all did.
+        assert_eq!(api_settings(&[], &exposed), [true, true]);
+        assert_eq!(api_settings_in_note(&api_settings_note([false, true], &[])), Some([false, true]));
+        assert_eq!(api_settings_in_note(&api_settings_note([true, false], &[])), Some([true, false]));
+        assert_eq!(extensions_in_note(&api_settings_note([true, true], &["pgcrypto".into(), "uuid-ossp".into()])), Some(vec!["pgcrypto".to_string(), "uuid-ossp".to_string()]));
+        assert_eq!(extensions_in_note(&api_settings_note([true, true], &[])), Some(vec![]));
+        assert_eq!(extensions_in_note("Reylo Migrate's history. This database began with Supabase's Data API settings: new tables exposed, new functions exposed."), None);
+        assert_eq!(api_settings_in_note("the history"), None);
+        let (privileges, _) = platform_defaults([false, true]);
+        assert!(privileges.contains(&"alter default privileges for role postgres in schema public revoke delete, insert, select, update on tables from anon".to_string()), "{privileges:?}");
+    }
 
     #[test]
     fn a_table_change_runs_strict_where_the_session_isnt() {

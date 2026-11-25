@@ -4135,6 +4135,27 @@ on!(
     init_writes_a_database_of_grants_alone,
     init_writes_the_event_triggers_it_compares,
     init_writes_the_publications_it_compares,
+    a_project_begun_on_supabase_runs_on_a_new_supabase_database,
+    a_supabase_projects_change_to_its_data_api_grants_is_its_own,
+    a_supabase_database_whose_one_change_is_a_default_grant_is_not_empty,
+    a_new_supabase_database_starts_an_empty_project_either_way,
+    a_project_begun_where_new_tables_are_hidden_runs_where_they_are_exposed,
+    a_later_change_to_supabases_default_grants_leaves_earlier_tables_alone,
+    a_pending_change_to_supabases_default_grants_changes_nothing_yet,
+    a_supabase_database_adopted_after_a_change_to_its_default_grants_keeps_its_tables,
+    a_supabase_database_adopted_before_a_backfill_runs_it,
+    supabases_extensions_stay_its_own_when_a_file_creates_one,
+    a_migration_creating_supabases_publication_is_refused_where_it_exists,
+    a_migration_making_a_dropped_supabase_extension_replays,
+    a_later_reinstall_of_a_supabase_extension_leaves_it_to_earlier_migrations,
+    a_supabase_database_that_began_without_an_extension_replays_its_making,
+    init_refuses_supabases_publication_of_every_table,
+    a_supabase_extension_kept_elsewhere_stays_the_environments,
+    a_supabase_extension_a_migration_moved_begins_where_it_was,
+    a_supabase_database_adopted_after_moving_or_updating_an_extension_replays_it,
+    a_migration_that_makes_supabases_publication_again_runs,
+    a_supabase_project_whose_files_create_its_publication_writes_new_migrations,
+    a_supabase_dump_keeps_each_tables_grants,
     init_reads_an_in_list_on_a_varchar_column_as_it_reads_back,
     init_reads_a_row_comparison_as_it_reads_back,
     a_dump_keeps_a_function_body_as_written,
@@ -8517,6 +8538,445 @@ create trigger kids_note after insert on kids begin update parents set name = na
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         let made: Vec<String> = q.rows("select pubname::text as n from pg_publication order by 1").await.iter().map(|r| r.text("n").to_string()).collect();
         assert_eq!(made, ["active_users", "supabase_realtime"]);
+    }
+
+    /// A database as Supabase makes it: the Data API's roles, granted `USAGE` on `public` and, through
+    /// `postgres`'s default privileges there, privileges on what `postgres` makes in it, every one
+    /// where new tables are exposed to the API (`exposes`), as they once were on every project and
+    /// still are on a local stack by default, and none of reading or writing rows where they aren't,
+    /// as on every hosted project now; its extensions in `extensions`; and its publication for
+    /// Realtime, empty. The database says it is a platform's, as a Supabase server's roles do: a role
+    /// is the whole server's, and would make every scenario beside this one a platform's.
+    async fn as_supabase_makes_it(p: &P, exposes: bool) {
+        for role in ["anon", "authenticated", "service_role"] {
+            p.exec(&format!("do $$ begin create role {role} nologin; exception when duplicate_object or unique_violation then null; end $$")).await;
+        }
+        p.exec(&format!("alter database {} set reylo.platform_schemas = 'on'", p.name)).await;
+        p.exec("create schema extensions; create extension \"uuid-ossp\" with schema extensions; create extension pgcrypto with schema extensions; create extension pg_stat_statements with schema extensions").await;
+        p.exec("grant usage on schema public to postgres, anon, authenticated, service_role").await;
+        for objects in ["tables", "sequences", "functions"] {
+            p.exec(&format!("alter default privileges for role postgres in schema public grant all on {objects} to postgres, anon, authenticated, service_role")).await;
+        }
+        if !exposes {
+            p.exec("alter default privileges for role postgres in schema public revoke select, insert, update, delete on tables from anon, authenticated, service_role").await;
+            p.exec("alter default privileges for role postgres in schema public revoke usage, select on sequences from anon, authenticated, service_role").await;
+        }
+        p.exec("create publication supabase_realtime").await;
+    }
+
+    /// How many of `privilege` on the table `table` `role` holds on the database `q`.
+    async fn holds(q: &P, table: &str, role: &str, privilege: &str) -> String {
+        q.rows(&format!("select count(*) as n from information_schema.role_table_grants where table_name = '{table}' and grantee = '{role}' and privilege_type = '{privilege}'")).await[0].text("n").to_string()
+    }
+
+    /// A project begun from a Supabase database leaves Supabase's own to Supabase: init writes none of
+    /// its extensions, default privileges, grants on `public` or publication, but each table's own
+    /// grants and the table the project publishes through that publication. Its migrations run on a
+    /// new Supabase database without undoing any of it, and the table keeps what it was granted
+    /// where new tables aren't exposed to the Data API, as on Supabase's hosted projects.
+    pub async fn a_project_begun_on_supabase_runs_on_a_new_supabase_database(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("create table profiles (id uuid primary key default extensions.gen_random_uuid(), name text)").await;
+        p.exec("create function touch() returns trigger language plpgsql as $$ begin return new; end $$").await;
+        p.exec("create view names as select name from profiles").await;
+        p.exec("alter publication supabase_realtime add table profiles").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let init = std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap();
+        for platform in ["create extension", "create publication", "default privileges", "on schema public", "revoke"] {
+            assert!(!init.to_lowercase().contains(platform), "{platform}:\n{init}");
+        }
+        assert_has!(init.clone(), r"(?i)grant all on table (public\.)?profiles to anon, authenticated, service_role");
+        assert_has!(init, r"(?i)alter publication supabase_realtime (add|set) table only (public\.)?profiles");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        as_supabase_makes_it(&q, false).await;
+        p.url = q.url.clone();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(q.rows("select count(*) as n from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'profiles'").await[0].text("n"), "1");
+        assert_eq!(holds(&q, "profiles", "anon", "SELECT").await, "1");
+        assert_eq!(holds(&q, "names", "authenticated", "SELECT").await, "1");
+        let r = P::new(p.d).await.unwrap();
+        as_supabase_makes_it(&r, true).await;
+        p.url = r.url.clone();
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let out = p.output();
+        assert!(!out.contains("Undid"), "{out}");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A Supabase project that takes back some of what Supabase grants its Data API (from `anon`,
+    /// here) keeps the change in its schema, from what Supabase once granted: init writes it before
+    /// what it makes, and each table's grants, so the tables are granted the same on a new Supabase
+    /// database, whether it exposes new tables to the API or not.
+    pub async fn a_supabase_projects_change_to_its_data_api_grants_is_its_own(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("alter default privileges for role postgres in schema public revoke all on tables from anon").await;
+        p.exec("revoke usage on schema public from anon").await;
+        p.exec("create table notes (id bigint generated always as identity primary key, body text)").await;
+        p.exec("revoke select on notes from authenticated").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let init = std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap();
+        assert_has!(init.clone(), r"(?i)alter default privileges (for role postgres )?in schema public revoke [a-z, ]+ on tables from anon");
+        assert_has!(init.clone(), r"(?i)revoke usage on schema public from anon");
+        assert_has!(init.clone(), r"(?i)revoke select on (table )?(public\.)?notes from authenticated");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        for exposes in [true, false] {
+            let q = P::new(p.d).await.unwrap();
+            as_supabase_makes_it(&q, exposes).await;
+            p.url = q.url.clone();
+            assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+            assert_eq!(p.migrate().await, 0, "{}", p.peek());
+            assert_eq!(p.status().await, 0, "{}", p.peek());
+            assert_eq!(holds(&q, "notes", "anon", "SELECT").await, "0", "exposes: {exposes}");
+            assert_eq!(holds(&q, "notes", "authenticated", "SELECT").await, "0", "exposes: {exposes}");
+            assert_eq!(holds(&q, "notes", "authenticated", "INSERT").await, "1", "exposes: {exposes}");
+            assert_eq!(holds(&q, "notes", "service_role", "SELECT").await, "1", "exposes: {exposes}");
+            assert_eq!(q.rows("select count(*) as n from pg_namespace n, aclexplode(n.nspacl) x where n.nspname = 'public' and x.grantee = 'anon'::regrole").await[0].text("n"), "0");
+        }
+    }
+
+    /// A new Supabase database holds no schema, whether its project exposes new tables to the Data
+    /// API or not: init starts a project with no migrations.
+    pub async fn a_new_supabase_database_starts_an_empty_project_either_way(p: P) {
+        let q = P::new(p.d).await.unwrap();
+        for (mut db, exposes) in [(p, true), (q, false)] {
+            as_supabase_makes_it(&db, exposes).await;
+            assert_eq!(db.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", db.peek());
+            assert_eq!(std::fs::read_to_string(db.dir.join("schema.sql")).unwrap(), "", "exposes: {exposes}");
+            assert!(db.files().is_empty(), "exposes: {exposes}: {:?}", db.files());
+        }
+    }
+
+    /// A project begun on a Supabase database whose project doesn't expose new tables to the Data API
+    /// leaves that setting to each database, and writes each table's own grants: on a database that
+    /// exposes new tables, its table is granted what it was and no more, and the database still
+    /// exposes the next.
+    pub async fn a_project_begun_where_new_tables_are_hidden_runs_where_they_are_exposed(mut p: P) {
+        as_supabase_makes_it(&p, false).await;
+        p.exec("create table notes (id int primary key, body text); grant select on notes to anon; grant select, insert, update, delete on notes to authenticated, service_role").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let init = std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap();
+        assert!(!init.to_lowercase().contains("default privileges"), "{init}");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        as_supabase_makes_it(&q, true).await;
+        p.url = q.url.clone();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(holds(&q, "notes", "anon", "SELECT").await, "1");
+        assert_eq!(holds(&q, "notes", "anon", "INSERT").await, "0");
+        assert_eq!(holds(&q, "notes", "authenticated", "DELETE").await, "1");
+        q.exec("create table later (id int)").await;
+        assert_eq!(holds(&q, "later", "anon", "SELECT").await, "1");
+    }
+
+    /// A migration that changes what Supabase grants the Data API's roles by default changes it for
+    /// what is made after it alone: replayed from what the database started with, a table made
+    /// before it keeps what it was granted, and the checks and the next migration find nothing
+    /// changed.
+    pub async fn a_later_change_to_supabases_default_grants_leaves_earlier_tables_alone(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        let posts = "create table posts (id int primary key);\n";
+        p.schema(posts);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        let hidden = format!("{posts}\nalter default privileges in schema public revoke select on tables from anon;\n");
+        p.schema(&hidden);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "hide_new_tables", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        p.schema(&format!("{hidden}\ncreate table notes (id int primary key);\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "notes", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(holds(&p, "posts", "anon", "SELECT").await, "1");
+        assert_eq!(holds(&p, "notes", "anon", "SELECT").await, "0");
+    }
+
+    /// A pending migration that changes what Supabase grants the Data API's roles by default changes
+    /// nothing on the database until it runs; once it has run, changing everything the project's
+    /// setting decides, the history still says how the database began, and a table made before it
+    /// keeps what it was granted.
+    pub async fn a_pending_change_to_supabases_default_grants_changes_nothing_yet(mut p: P) {
+        as_supabase_makes_it(&p, false).await;
+        let posts = "create table posts (id int primary key);\n";
+        p.schema(posts);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        let exposed = format!("{posts}\nalter default privileges in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role;\n\nalter default privileges in schema public grant usage, select on sequences to anon, authenticated, service_role;\n");
+        p.schema(&exposed);
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "expose_new_tables", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        p.schema(&format!("{exposed}\ncreate table notes (id int primary key);\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "notes", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(holds(&p, "posts", "anon", "SELECT").await, "0");
+        assert_eq!(holds(&p, "notes", "anon", "SELECT").await, "1");
+    }
+
+    /// A Supabase database that ran its migrations before Reylo recorded them, one of which changed
+    /// what Supabase grants the Data API's roles by default after a table was made: history push
+    /// records them from how the database began, which the privileges they leave alone show, or,
+    /// where they change all of them, the replay that reaches the database; and the checks after
+    /// find the table as it is.
+    pub async fn a_supabase_database_adopted_after_a_change_to_its_default_grants_keeps_its_tables(p: P) {
+        let tables = "alter default privileges in schema public grant select, insert, update, delete on tables to anon, authenticated, service_role;\n";
+        let sequences = "alter default privileges in schema public grant usage, select on sequences to anon, authenticated, service_role;\n";
+        let q = P::new(p.d).await.unwrap();
+        for (mut db, exposing) in [(p, tables.to_string()), (q, format!("{tables}\n{sequences}"))] {
+            as_supabase_makes_it(&db, false).await;
+            let posts = "create table posts (id int primary key);\n";
+            db.file("20261124000000_posts.sql", posts);
+            db.file("20261124000001_expose_new_tables.sql", &exposing);
+            db.schema(&format!("{posts}\n{exposing}"));
+            db.exec(posts).await;
+            db.exec(&exposing).await;
+            assert_eq!(db.history_push().await, 0, "{}", db.peek());
+            assert_eq!(db.history().await.len(), 2);
+            assert_eq!(db.dry_run().await, 0, "{}", db.peek());
+            assert_eq!(holds(&db, "posts", "anon", "SELECT").await, "0");
+        }
+    }
+
+    /// A Supabase database that ran a table's migration before Reylo recorded it, but not the next,
+    /// which takes the Data API's roles' grants back and changes rows: history push records the
+    /// first alone, from the start under which the database ran the fewest, and deploy runs the
+    /// second, rows and all.
+    pub async fn a_supabase_database_adopted_before_a_backfill_runs_it(mut p: P) {
+        as_supabase_makes_it(&p, false).await;
+        let posts = "create table posts (id int primary key, body text);\n";
+        let hide = "alter default privileges in schema public revoke select, insert, update, delete on tables from anon, authenticated, service_role;\n\nalter default privileges in schema public revoke usage, select on sequences from anon, authenticated, service_role;\n\nrevoke select, insert, update, delete on posts from anon, authenticated, service_role;\n";
+        p.file("20261124000000_posts.sql", posts);
+        p.file("20261124000001_hide.sql", &format!("{hide}\nupdate posts set body = 'new';\n"));
+        p.schema(&format!("{posts}\n{hide}"));
+        p.exec(posts).await;
+        p.exec("insert into posts values (1, 'old')").await;
+        assert_eq!(p.history_push().await, 0, "{}", p.peek());
+        assert_eq!(p.history().await, ["20261124000000_posts.sql"]);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select body from posts").await[0].text("body"), "new");
+    }
+
+    /// Supabase's own extensions stay where Supabase put them, whatever the project's files say:
+    /// one a file creates with no schema is no change, and a reset leaves it.
+    pub async fn supabases_extensions_stay_its_own_when_a_file_creates_one(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.schema("create extension if not exists \"uuid-ossp\";\n\ncreate table posts (id uuid primary key default extensions.uuid_generate_v4());\n");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select n.nspname as s from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname = 'uuid-ossp'").await[0].text("s"), "extensions");
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A migration that creates one of Supabase's own extensions where it was dropped, with no `if not
+    /// exists`, makes it in the shadows too, where it would otherwise be there already.
+    pub async fn a_migration_making_a_dropped_supabase_extension_replays(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("drop extension pg_stat_statements").await;
+        let sql = "create extension pg_stat_statements with schema extensions;\n";
+        p.schema(sql);
+        p.file("20261124000000_statements.sql", sql);
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A migration that drops one of Supabase's own extensions and makes it again leaves it to every
+    /// migration before it, which may use it: the database began with it.
+    pub async fn a_later_reinstall_of_a_supabase_extension_leaves_it_to_earlier_migrations(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        let posts = "create table posts (id uuid primary key default extensions.uuid_generate_v4());\n";
+        p.schema(posts);
+        p.file("20261124000000_posts.sql", posts);
+        p.file("20261124000001_reinstall.sql", "drop extension pg_stat_statements, \"uuid-ossp\" cascade;\n\ncreate extension \"uuid-ossp\" with schema extensions;\n\ncreate extension pg_stat_statements with schema extensions;\n\nalter table posts alter column id set default extensions.uuid_generate_v4();\n");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A migration that moves one of Supabase's own extensions out of `extensions` leaves it there to
+    /// every migration before it: the checks replay from how the database began, and a reset moves
+    /// it back before running them again.
+    pub async fn a_supabase_extension_a_migration_moved_begins_where_it_was(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.file("20261124000000_posts.sql", "create table posts (id uuid primary key default extensions.uuid_generate_v4());\n");
+        p.file("20261124000001_move.sql", "alter extension \"uuid-ossp\" set schema public;\n");
+        p.schema("alter extension \"uuid-ossp\" set schema public;\n\ncreate table posts (id uuid primary key default public.uuid_generate_v4());\n");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        p.schema("alter extension \"uuid-ossp\" set schema public;\n\ncreate table posts (id uuid primary key default public.uuid_generate_v4(), body text);\n");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "body", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select n.nspname as s from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname = 'uuid-ossp'").await[0].text("s"), "public");
+    }
+
+    /// A Supabase database that ran its migrations before Reylo recorded them, which moved one of
+    /// Supabase's own extensions out of `extensions` or updated one the environment put in `public`:
+    /// history push records them replaying from where each began, and the checks after agree.
+    pub async fn a_supabase_database_adopted_after_moving_or_updating_an_extension_replays_it(p: P) {
+        let q = P::new(p.d).await.unwrap();
+        let moved = ("create table posts (id uuid primary key default extensions.uuid_generate_v4());\n", "alter extension \"uuid-ossp\" set schema public;\n");
+        let updated = ("create table posts (id uuid primary key default public.uuid_generate_v4());\n", "alter extension \"uuid-ossp\" update;\n");
+        for (mut db, (posts, then), provided) in [(p, moved, false), (q, updated, true)] {
+            as_supabase_makes_it(&db, true).await;
+            if provided {
+                db.exec("drop extension \"uuid-ossp\"; create extension \"uuid-ossp\" with schema public").await;
+            }
+            db.file("20261124000000_posts.sql", posts);
+            db.file("20261124000001_extension.sql", then);
+            db.schema(&format!("{}create table posts (id uuid primary key default public.uuid_generate_v4());\n", if provided { "" } else { then }));
+            db.exec(posts).await;
+            db.exec(then).await;
+            assert_eq!(db.history_push().await, 0, "{}", db.peek());
+            assert_eq!(db.history().await.len(), 2);
+            assert_eq!(db.dry_run().await, 0, "{}", db.peek());
+        }
+    }
+
+    /// A Supabase database that began without one of Supabase's extensions replays its migrations from
+    /// how it began, which its history notes: one that makes the extension only if it isn't there, in
+    /// `public`, makes it there, and a later one moves it back; the checks and a reset find it so.
+    pub async fn a_supabase_database_that_began_without_an_extension_replays_its_making(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("drop extension \"uuid-ossp\"").await;
+        p.file("20261124000000_posts.sql", "create extension if not exists \"uuid-ossp\" with schema public;\n\ncreate table posts (id uuid primary key default public.uuid_generate_v4());\n");
+        p.file("20261124000001_move.sql", "drop extension \"uuid-ossp\" cascade;\n\ncreate extension \"uuid-ossp\" with schema extensions;\n\nalter table posts alter column id set default extensions.uuid_generate_v4();\n");
+        p.schema("create extension \"uuid-ossp\" with schema extensions;\n\ncreate table posts (id uuid primary key default extensions.uuid_generate_v4());\n");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::db_reset(o, false, log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select n.nspname as s from pg_extension x join pg_namespace n on n.oid = x.extnamespace where x.extname = 'uuid-ossp'").await[0].text("s"), "extensions");
+    }
+
+    /// A Supabase database whose `supabase_realtime` was made again to publish every table can't be
+    /// begun from: init refuses it before writing anything, with the command that names its tables.
+    pub async fn init_refuses_supabases_publication_of_every_table(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("create table posts (id int primary key)").await;
+        p.exec("drop publication supabase_realtime; create publication supabase_realtime for all tables with (publish = 'insert')").await;
+        p.output();
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 1, "{}", p.peek());
+        assert_has!(p.output(), r"create publication supabase_realtime for table public\.posts with \(publish = '\\''insert'\\''\)");
+        assert!(!p.dir.join("schema.sql").exists());
+    }
+
+    /// A migration that drops `supabase_realtime` and makes it again is no project's own copy of it:
+    /// it runs, and replays, where the publication is.
+    pub async fn a_migration_that_makes_supabases_publication_again_runs(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        let sql = "create table posts (id int primary key);\n\ndrop publication supabase_realtime;\n\ncreate publication supabase_realtime for table posts;\n";
+        p.schema("create table posts (id int primary key);\n\nalter publication supabase_realtime add table posts;\n");
+        p.file("20261124000000_posts.sql", sql);
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// One of Supabase's extensions a database has in another schema, where no migration put it, is
+    /// the environment's there: a declaration that calls it is drafted as on any database.
+    pub async fn a_supabase_extension_kept_elsewhere_stays_the_environments(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("drop extension \"uuid-ossp\"; create extension \"uuid-ossp\" with schema public").await;
+        p.schema("create table posts (id uuid primary key default public.uuid_generate_v4());\n");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    /// A project begun before Reylo left `supabase_realtime` to Supabase creates it in its first
+    /// migration, which fails on a new Supabase database: the checks say so before anything runs.
+    pub async fn a_migration_creating_supabases_publication_is_refused_where_it_exists(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        let sql = "create table profiles (id int primary key);\n\ncreate publication supabase_realtime;\n";
+        p.schema(sql);
+        p.file("init.sql", sql);
+        p.output();
+        assert_eq!(p.dry_run().await, 1, "{}", p.peek());
+        assert_eq!(p.migrate().await, 1, "{}", p.peek());
+        let out = p.output();
+        assert_has!(out.clone(), r"Migration init\.sql creates supabase_realtime, which this Supabase database has already");
+        assert_has!(out, r"reylo migrate history push --url <url>");
+        assert_eq!(p.rows("select count(*) as n from pg_class where relname = 'profiles'").await[0].text("n"), "0");
+    }
+
+    /// A Supabase database whose one change is to what its Data API's roles are granted by default
+    /// holds a schema: init writes the change, which holds no line of the catalog's own.
+    pub async fn a_supabase_database_whose_one_change_is_a_default_grant_is_not_empty(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("alter default privileges for role postgres in schema public revoke select on tables from anon").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let schema = std::fs::read_to_string(p.dir.join("schema.sql")).unwrap();
+        assert_has!(schema, r"(?i)alter default privileges (for role postgres )?in schema public revoke select on tables from anon");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// A project begun on Supabase before Reylo left its publication to it creates the publication
+    /// in its own files: its shadows leave all of what a new Supabase database has to them, so a new
+    /// migration is written and run as before.
+    pub async fn a_supabase_project_whose_files_create_its_publication_writes_new_migrations(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("create table profiles (id int primary key)").await;
+        let sql = "create table profiles (id int primary key);\n\ncreate publication supabase_realtime;\n";
+        p.schema(sql);
+        p.file("init.sql", sql);
+        assert_eq!(p.history_push().await, 0, "{}", p.peek());
+        p.schema(&format!("{sql}\ncreate table posts (id int primary key);\n"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "posts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+    }
+
+    /// Where Reylo's own SQL can't write a Supabase database (a text search configuration, which it
+    /// reads by name), its dump leaves out what a new Supabase database has as its own SQL does, and
+    /// keeps each table's grants: what it lacks is revoked, and a grant option its default privileges
+    /// give and it lacks is taken back.
+    pub async fn a_supabase_dump_keeps_each_tables_grants(mut p: P) {
+        as_supabase_makes_it(&p, true).await;
+        p.exec("alter default privileges for role postgres in schema public grant select on tables to anon with grant option").await;
+        p.exec("create table posts (id int primary key, body text)").await;
+        p.exec("revoke grant option for select on posts from anon; revoke insert on posts from authenticated").await;
+        p.exec("create text search configuration public.plain (copy = english)").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+        let init = std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap();
+        assert_has!(init.clone(), r"CREATE TEXT SEARCH CONFIGURATION");
+        for platform in ["CREATE EXTENSION", "CREATE PUBLICATION", "ON SCHEMA public"] {
+            assert!(!init.contains(platform), "{platform}:\n{init}");
+        }
+        assert_has!(init.clone(), r"REVOKE GRANT OPTION FOR SELECT ON TABLE public\.posts FROM anon");
+        assert_has!(init, r"REVOKE INSERT ON TABLE public\.posts FROM authenticated");
+        p.strict = true;
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        let q = P::new(p.d).await.unwrap();
+        as_supabase_makes_it(&q, false).await;
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.status().await, 0, "{}", p.peek());
+        assert_eq!(holds(&q, "posts", "anon", "SELECT").await, "1");
+        assert_eq!(holds(&q, "posts", "authenticated", "INSERT").await, "0");
+        assert_eq!(holds(&q, "posts", "service_role", "INSERT").await, "1");
+        assert_eq!(q.rows("select count(*) as n from information_schema.role_table_grants where table_name = 'posts' and grantee = 'anon' and is_grantable = 'YES'").await[0].text("n"), "0");
     }
 
     /// A varchar column's `in (…)` renders as a cast of the whole array, which Postgres reads back as
