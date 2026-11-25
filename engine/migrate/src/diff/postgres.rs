@@ -2298,6 +2298,45 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
         }
     }
+    // What holds a value of a relation's row type in a stored expression, as a dependency on the
+    // type records it: on the row type itself, or on a type carrying it (an array, a domain, a range,
+    // a composite type or a table with a column of it). Postgres refuses to rewrite the relation (a
+    // change of a column's type, a column added with a default) under a view's query or a column's
+    // default that does, and under a function's SQL-standard body or argument default that does, a
+    // parameter of the row type the body reads included (14.25, 15.20, 16.16, 17.12, 18.7 and
+    // later). A function depends on the types of its arguments and result too, which its stored text
+    // names by oid only where its body or a default holds them. A generated column is made again
+    // around a change of what it reads, as its own rule says.
+    for r in db
+        .rows(
+            "with recursive edges(inner_type, outer_type) as (
+                select typelem, oid from pg_type where typelem <> 0 and typsubscript = 'array_subscript_handler'::regproc
+                union all select typbasetype, oid from pg_type where typtype = 'd'
+                union all select rngsubtype, rngtypid from pg_range
+                union all select rngtypid, rngmultitypid from pg_range
+                union all select a.atttypid, c.reltype from pg_attribute a join pg_class c on c.oid = a.attrelid where a.attnum > 0 and not a.attisdropped and c.reltype <> 0
+              ), carried(type, rel) as (
+                select reltype, oid from pg_class where reltype <> 0 and oid >= 16384
+                union select e.outer_type, c.rel from carried c join edges e on e.inner_type = c.type
+              )
+            select distinct format('%s', d.classid::regclass) as cls, d.objid, c.rel
+            from pg_depend d join carried c on d.refclassid = 'pg_type'::regclass and d.refobjid = c.type
+              left join pg_proc p on d.classid = 'pg_proc'::regclass and p.oid = d.objid
+              left join pg_attrdef ad on d.classid = 'pg_attrdef'::regclass and ad.oid = d.objid
+            where d.deptype = 'n' and d.classid in ('pg_proc'::regclass, 'pg_rewrite'::regclass, 'pg_attrdef'::regclass)
+              and not exists (select 1 from pg_attribute a where a.attrelid = ad.adrelid and a.attnum = ad.adnum and a.attgenerated <> '')
+              and (d.classid <> 'pg_proc'::regclass or concat(p.prosqlbody::text, ' ', p.proargdefaults::text) ~ (E'\\\\m' || c.type || E'\\\\M'))",
+        )
+        .await?
+    {
+        let (Some(holder), Some(rel)) = (ids.of(r.text("cls"), oid(&r, "objid"), 0), ids.of("pg_class", oid(&r, "rel"), 0)) else { continue };
+        if let Some(o) = s.objects.get_mut(&holder).filter(|o| matches!(o.kind, Some(Kind::Function | Kind::View | Kind::Rule | Kind::Column))) {
+            let line = format!("{}{rel}", super::HOLDS_ROW);
+            if !o.extra.contains(&line) {
+                o.extra.push(line);
+            }
+        }
+    }
     // A table's copy of another's check is no object of its own, but holds what it calls: the
     // table carries that, read off the copy itself, whichever ancestor the check came down from.
     for r in db
@@ -4595,7 +4634,9 @@ impl Alterer for PostgresAlterer {
         let only = if (to.extra.iter().any(|l| l == "partitioned") && parse_column(&from.def).ty == parse_column(&to.def).ty) || to.extra.iter().any(|l| l == INHERITED_FROM) { "only " } else { "" };
         let at = format!("alter table {only}{table} alter column {name}");
         let drop = parse_column(&from.def).default.map(|_| format!("{at} drop default"));
-        let set = parse_column(&to.def).default.map(|d| format!("{at} set default {d}"));
+        // Set under the name the column has then, where the plan renames it.
+        let now = format!("alter table {only}{} alter column {}", to.owner.as_deref()?.strip_prefix("table ")?, super::last_written(to.id.strip_prefix("column ")?));
+        let set = parse_column(&to.def).default.map(|d| format!("{now} set default {d}"));
         Some((drop.into_iter().collect(), set.into_iter().collect()))
     }
 
@@ -4635,6 +4676,21 @@ impl Alterer for PostgresAlterer {
         let referenced = from.deps.iter().filter_map(|d| column_of(d)).map(|(t, _)| t).find(|t| t != own).or_else(|| references(&from.def).is_none_or(|r| r == own || own.ends_with(&format!(".{r}"))).then(|| own.to_string()));
         let names = |table: &str| -> BTreeMap<String, String> { renamed.iter().filter_map(|(old, new)| Some((column_of(old)?, column_of(new)?))).filter(|((t, _), _)| t == table).map(|((_, old), (_, new))| (catalog_name(&old), new)).collect() };
         renamed_key(&from.def, &names(own), referenced.map(|r| names(&r)).as_ref())
+    }
+
+    fn fills(&self, column: &Object, schema: &Schema) -> bool {
+        // The server fills each row with the column's value as it adds one with a default, an
+        // identity or a generated expression, a constant default included, or of a domain with a
+        // default or a constraint, its base domains' included.
+        fn constrained(schema: &Schema, id: &str) -> bool {
+            schema.objects.get(id).filter(|t| t.def.starts_with("domain ")).is_some_and(|t| t.extra.iter().any(|l| l.starts_with("default ") || l.starts_with("check ") || l == "not null") || t.deps.iter().any(|d| constrained(schema, d)))
+        }
+        let c = parse_column(&column.def);
+        column.kind == Some(Kind::Column) && (c.default.is_some() || c.identity.is_some() || c.generated.is_some() || column.deps.iter().any(|d| constrained(schema, d)))
+    }
+
+    fn validates(&self, from: &Object, to: &Object) -> bool {
+        domain_validates(from, to)
     }
 
     fn keeps_values(&self, from: &Object, to: &Object) -> bool {
