@@ -1,6 +1,6 @@
 ---
 name: reylo
-description: "Use in a project that imports .sql files with Reylo, which a tsconfig.json whose contentMappers names reylo, a .reylo.yaml file, a reylo dependency or a file reylo generate wrote shows: writing or changing a .sql query, calling its .run(), .runSync() or .with(), passing it a database client, tracing or logging its queries, fixing an error the type check reports in a .sql file, or evaluating, planning or carrying out a move of a project's queries to Reylo from Prisma Client."
+description: "Use in a project that imports .sql files with Reylo, which a tsconfig.json whose contentMappers names reylo, a .reylo.yaml file, a reylo dependency or a file reylo generate wrote shows: writing or changing a .sql query, calling its .run(), .runSync() or .with(), passing it a database client, tracing or logging its queries, fixing an error the type check reports in a .sql file, or evaluating, planning or carrying out a move of a project to Reylo from Prisma."
 ---
 
 # Reylo
@@ -91,4 +91,4 @@ Open one when the task touches it:
 - The rarer forms of a query, in `references/writing.md`: slices, bulk inserts, constants, reusable SQL functions, JSON Schema checks, and the playground's API.
 - Running queries, in `references/running.md`: each driver's details (postgres.js and poolers, MySQL through Hyperdrive, SQLite's `.runSync()`, `STRICT` tables and quotes, ClickHouse's parameters, row counts and settings), every value type, arrays of more than one dimension, `.readOnly`, `.with()`, tracing, row keys and decoders, the cache, and a schema that changes after the build.
 - Migrations, in `references/migrations.md`: `reylo migrate` and `reylo db`, the schema file, writing and running migrations, the lock, and deploying.
-- Moving a project's queries from Prisma Client, in `references/prisma.md`.
+- Moving a project from Prisma, its migrations and its Prisma Client calls, in `references/prisma.md`.
