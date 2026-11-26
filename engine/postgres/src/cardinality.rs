@@ -74,7 +74,9 @@ use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::oid;
 use syntax::postgres::protobuf::{self, node::Node as NodeEnum, SelectStmt};
 use serde_json::Value;
+use std::cell::LazyCell;
 use std::collections::HashSet;
+use std::ops::Deref;
 
 /// The shapes the build proves return exactly one row, for the diagnostic that refuses a
 /// middleware it cannot prove.
@@ -508,6 +510,8 @@ fn with_fields(s: &SelectStmt, catalog: &Catalog) -> Catalog {
 }
 
 fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
+    #[cfg(test)]
+    tests::EXACT_PROOFS.set(tests::EXACT_PROOFS.get() + 1);
     if (s.limit_count.is_some() || s.limit_offset.is_some()) && limit_keeps_a_row(s) {
         return exactly_one_select(&unlimited(s), dialect, trust, catalog);
     }
@@ -529,7 +533,7 @@ fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         Level::of(&s.from_clause, &withs, &catalog.columns)
     });
     // The type of a column an aggregate's argument reads, which says it is no row.
-    let from = From::read(s, catalog);
+    let mut from = From::read(s, catalog);
     let aggregates = s.target_list.iter().any(|target| match target.node.as_ref() {
         Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|val| infer::aggregates(val, dialect, trust, level.as_ref(), catalog.row_fields.as_ref(), &|n| from.node_type(n, catalog))),
         _ => false,
@@ -555,7 +559,12 @@ fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
     if !s.locking_clause.is_empty() {
         return Err("a locking clause can skip a locked row".into());
     }
-    one_row(s, dialect, trust, catalog)
+    // `never_empty` proved exactly one row for every subquery it visited. It visited both sides
+    // of an inner join and only the preserved side of an outer join.
+    for item in &mut from.items {
+        item.proven_one = !item.nullable && matches!(item.source, Source::With(_, false) | Source::Subquery(..));
+    }
+    one_row(s, &from, dialect, trust, catalog)
 }
 
 /// Why a FROM item, with what it joins, may return no row; `Ok` when it returns at least one row
@@ -782,8 +791,8 @@ fn at_most_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
     // A WITH query of any number of rows may still be pinned to one by a key of its own.
     match cte_passthrough(s, dialect, trust, catalog) {
         Some(Ok(_)) => Ok(()),
-        Some(Err(why)) => one_row(s, dialect, trust, catalog).map_err(|_| why),
-        None => one_row(s, dialect, trust, catalog),
+        Some(Err(why)) => one_row(s, &From::read(s, catalog), dialect, trust, catalog).map_err(|_| why),
+        None => one_row(s, &From::read(s, catalog), dialect, trust, catalog),
     }
 }
 
@@ -926,6 +935,9 @@ struct Item<'a> {
     /// Whether an outer join can null-extend it: the right side of a LEFT JOIN, the left of a
     /// RIGHT JOIN, inside either.
     nullable: bool,
+    /// A WITH query or subquery already proved exactly one row by `never_empty`. For LATERAL,
+    /// that is one row per row of its inputs.
+    proven_one: bool,
     /// Whether its alias renames its columns (`users u (a, b)`), so a column's name is not the
     /// catalog's.
     renamed: bool,
@@ -986,7 +998,7 @@ impl<'a> From<'a> {
     fn target(rv: &'a protobuf::RangeVar, where_clause: Option<&'a protobuf::Node>, with: Option<&'a protobuf::WithClause>, joined: &'a [protobuf::Node]) -> From<'a> {
         let ctes = with_names(with).cloned().collect();
         let (alias, renamed) = rv.alias.as_ref().map_or_else(|| (rv.relname.clone(), false), |a| (a.aliasname.clone(), !a.colnames.is_empty()));
-        let item = Item { alias, source: Source::Relation(rv), nullable: false, renamed, columns: Vec::new() };
+        let item = Item { alias, source: Source::Relation(rv), nullable: false, proven_one: false, renamed, columns: Vec::new() };
         let conjuncts = where_clause.into_iter().flat_map(conjuncts_of).map(|node| Conjunct { node, may_pin: None, inner: true }).collect();
         let mut from = From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None, with };
         for item in joined {
@@ -1012,7 +1024,7 @@ impl<'a> From<'a> {
                     None if rv.schemaname.is_empty() && self.ctes.contains(&rv.relname) => Source::Enclosing(rv.relname.clone()),
                     None => Source::Relation(rv),
                 };
-                self.items.push(Item { alias, source, nullable, renamed, columns: columns(rv.alias.as_ref()) });
+                self.items.push(Item { alias, source, nullable, proven_one: false, renamed, columns: columns(rv.alias.as_ref()) });
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let (alias, renamed) = r.alias.as_ref().map(named).unwrap_or_default();
@@ -1020,7 +1032,7 @@ impl<'a> From<'a> {
                     Some(NodeEnum::SelectStmt(sub)) => Source::Subquery(sub, r.lateral),
                     _ => Source::Opaque,
                 };
-                self.items.push(Item { alias, source, nullable, renamed, columns: columns(r.alias.as_ref()) });
+                self.items.push(Item { alias, source, nullable, proven_one: false, renamed, columns: columns(r.alias.as_ref()) });
             }
             Some(NodeEnum::JoinExpr(j)) => {
                 use protobuf::JoinType;
@@ -1083,7 +1095,7 @@ impl<'a> From<'a> {
                     _ => Source::Opaque,
                 };
                 match alias {
-                    Some(alias) => self.items.push(Item { alias, source, nullable, renamed: true, columns: Vec::new() }),
+                    Some(alias) => self.items.push(Item { alias, source, nullable, proven_one: false, renamed: true, columns: Vec::new() }),
                     None => self.refused = Some("a FROM item the engine cannot name"),
                 }
             }
@@ -1099,13 +1111,16 @@ impl<'a> From<'a> {
     }
 
     /// The keys of each subquery, WITH query and view, by item, read from its statement
-    /// ([`output_keys`]): they pin it as a unique index pins a table. None for a table.
-    fn derived_keys(&self, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Vec<Key>> {
+    /// ([`output_keys`]): they pin it as a unique index pins a table. None for a table or an item
+    /// already proved to return one row. Reading the keys on demand lets a direct row bound
+    /// settle an item without walking its statement again.
+    fn derived_keys<'f>(&'f self, dialect: Dialect, trust: &'f Trust, catalog: &'f Catalog) -> Vec<impl Deref<Target = Vec<Key>> + 'f> {
         (0..self.items.len())
-            .map(|i| match &self.items[i].source {
+            .map(|i| LazyCell::new(move || match &self.items[i].source {
+                _ if self.items[i].proven_one => Vec::new(),
                 Source::Relation(rv) if !catalog.views.contains_key(&catalog_name(rv)) => Vec::new(),
                 _ => self.item_keys(i, dialect, trust, catalog),
-            })
+            }))
             .collect()
     }
 
@@ -1113,7 +1128,7 @@ impl<'a> From<'a> {
     /// one item alone, whether every row of it meets one row at most of each other item. `keys`
     /// are [`From::derived_keys`].
     #[allow(clippy::too_many_arguments)]
-    fn determined_from(&self, mut done: Vec<bool>, keys: &[Vec<Key>], constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
+    fn determined_from(&self, mut done: Vec<bool>, keys: &[impl Deref<Target = Vec<Key>>], constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
         let n = self.items.len();
         // The items of one row at most per row of the rest (rule 4).
         let per_row: Vec<bool> = self
@@ -1135,6 +1150,7 @@ impl<'a> From<'a> {
                 let item = &self.items[i];
                 let rest = || (0..n).all(|j| j == i || done[j] || (!constant && per_row[j]));
                 let pinned = match &item.source {
+                    _ if item.proven_one => !per_row[i] || rest(),
                     Source::Relation(_) if per_row[i] => !constant && rest(),
                     Source::Relation(rv) => self.key_pinned(i, rv, &done, constant, catalog) || self.derived_pinned(i, &keys[i], &done, constant, catalog),
                     _ if constant && item.nullable => false,
@@ -3125,7 +3141,7 @@ fn not_key_shaped(s: &SelectStmt) -> Option<&'static str> {
 
 /// The key proof over the whole FROM: every item is determined ([`From`]), so the FROM has one
 /// row at most; or `SELECT DISTINCT` (`DISTINCT ON`) over values that are the same in every row.
-fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
+fn one_row(s: &SelectStmt, from: &From, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
     // With no FROM there is one row before the WHERE, which only removes it: on Postgres, whose
     // select list the caller has found no set-returning call in, the statement returns one row
     // at most (`SELECT 1 WHERE $1`).
@@ -3135,7 +3151,6 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
     if s.from_clause.is_empty() {
         return Err("a SELECT with no FROM and a WHERE can return no row or one, and the engine proves that only through a LIMIT".into());
     }
-    let from = From::read(s, catalog);
     if let Some(why) = from.refused {
         return Err(why.to_string());
     }
@@ -3823,6 +3838,29 @@ fn walk(v: &Value, calls: &mut Calls) {
 
 #[cfg(test)]
 mod tests {
+    std::thread_local! {
+        pub(super) static EXACT_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn the_upper_bound_reuses_the_exact_row_count_of_each_subquery() {
+        for (sql, selects) in [
+            ("WITH totals AS (SELECT count(*) AS n FROM todos) SELECT n FROM totals", 2),
+            ("SELECT s.n FROM (SELECT t.n FROM (SELECT count(*) AS n FROM todos) t) s", 3),
+            ("SELECT s.n FROM (SELECT count(*) AS n FROM todos) s LEFT JOIN users u ON u.id = s.n", 2),
+            ("SELECT s.n FROM (SELECT 1 AS n) s CROSS JOIN LATERAL (SELECT s.n) t", 3),
+            ("SELECT s.n FROM (SELECT 1 AS n) s LEFT JOIN (SELECT 2 AS n) t ON false", 3),
+            ("SELECT s.n FROM (SELECT 1 AS n) s LEFT JOIN
+                (SELECT t.n FROM (SELECT 2 AS n) t LEFT JOIN (SELECT count(*) AS n FROM todos) c ON t.n = c.n) r
+                ON s.n = r.n", 5),
+        ] {
+            EXACT_PROOFS.set(0);
+            assert_eq!(pg(sql), Ok(()), "{sql}");
+            assert_eq!(EXACT_PROOFS.get(), selects, "{sql}");
+        }
+        assert!(pg("SELECT s.n FROM (SELECT 1 AS n) s LEFT JOIN (SELECT id FROM todos) t ON true").is_err());
+    }
+
     #[test]
     fn a_trigger_keeps_the_row_where_every_return_is_a_row() {
         let (update, insert, delete) = (TRIGGER_ROW_UPDATE, TRIGGER_ROW_INSERT, TRIGGER_ROW_DELETE);
