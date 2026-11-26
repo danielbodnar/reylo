@@ -760,7 +760,8 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown, dia
 // What `run` returns goes back in as the database reads it (the round-trip rule, src/render.ts):
 // on Postgres a date or time with an extended or BC year in Postgres's own form, which refuses
 // `+010000` and `0000`, and a negative interval with each part signed (`-P1D` as `P-1D`), since
-// Postgres refuses a sign before the `P`; on SQLite a truth value, which a BOOLEAN column returns, as 1 or 0, since
+// Postgres refuses a sign before the `P`, and a float of -0 as the text `-0`, since pg's family,
+// postgres.js, PGlite, Neon and Drizzle's driver write that number as `0`; on SQLite a truth value, which a BOOLEAN column returns, as 1 or 0, since
 // better-sqlite3 refuses a boolean ("SQLite3 can only bind numbers, strings, bigints, buffers, and
 // null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither. On MySQL
 // a VECTOR, MySQL's one array, as the text of its floats, `[1,2.5]`, which the engine's
@@ -799,6 +800,7 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   // A money holds cents in the C locale Reylo reads it in, and Postgres rounds a value past them
   // without an error.
   if (kind === "money" && (typeof v !== "string" || !/^-?\d+(?:\.\d{1,2}0*)?$/.test(v))) throw new ParameterError(`Parameter "${name}" is a Postgres money, which holds cents: pass its decimal text, with two digits after the point at most (1234.56); got ${describe(v)}.`);
+  if (kind === "float" && Object.is(v, -0)) return "-0";
   if (typeof v !== "string") return v;
   if (isTime(type, dialect)) return postgresYear(v);
   return kind === "interval" ? postgresInterval(v) : v;
