@@ -11,7 +11,7 @@
 
 import type { QueryError } from "./query-error.ts";
 import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, vectorText, withinDimensions, zoned, type Columns, type JsonNumbers, type Kind } from "./values.ts";
-import { bareName, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
+import { bareName, holdsWholeArrays, isMysqlSet, schemaOf, type EngineType } from "./engine-type.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
 import type { SqlMode } from "./engine-core.ts";
@@ -726,7 +726,7 @@ export const isTime = (type: EngineType | undefined, dialect: Dialect) => type !
 function checkTime(type: EngineType | undefined, name: string, v: unknown, dialect: Dialect): void {
   if (type === undefined || v == null) return;
   if (type.kind === "array") {
-    if (Array.isArray(v)) for (const e of v) checkTime(Array.isArray(e) ? type : type.element.type, name, e, dialect);
+    if (Array.isArray(v)) for (const e of v) checkTime(Array.isArray(e) && !holdsWholeArrays(type) ? type : type.element.type, name, e, dialect);
     return;
   }
   const kind = columnKind(type, dialect);
@@ -750,7 +750,7 @@ function checkTime(type: EngineType | undefined, name: string, v: unknown, diale
 function checkBinary(type: EngineType | undefined, name: string, v: unknown, dialect: Dialect): void {
   if (type === undefined || v == null) return;
   if (type.kind === "array" && columnKind(type, dialect).endsWith("[]")) {
-    if (Array.isArray(v)) for (const e of v) checkBinary(Array.isArray(e) ? type : type.element.type, name, e, dialect);
+    if (Array.isArray(v)) for (const e of v) checkBinary(Array.isArray(e) && !holdsWholeArrays(type) ? type : type.element.type, name, e, dialect);
     return;
   }
   if (columnKind(type, dialect) !== "bytes" || v instanceof Uint8Array) return;
@@ -789,6 +789,10 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (!kind.endsWith("[]") && (isRowKind(kind) || GEOMETRIC_KINDS.has(kind) || isRangeKind(kind) || isMultirangeKind(kind))) return postgresLiteral(type, v, (message) => {
     throw new ParameterError(`Parameter "${name}" is ${message}`);
   });
+  // An array of whole arrays (of a domain over an array type) goes as an array of each one's text.
+  if (type.kind === "array" && holdsWholeArrays(type) && Array.isArray(v)) return v.map((e) => (e == null ? e : postgresLiteral(type.element.type, e, (message) => {
+    throw new ParameterError(`Parameter "${name}" is an array of arrays, each element ${message}`);
+  })));
   if (type.kind === "array" && kind.endsWith("[]")) return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !isArrayValued(columnKind(type.element.type, dialect)) ? type : type.element.type, e, dialect, name)) : v;
   if (kind === "vector" && Array.isArray(v)) {
     if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${bareName(type)}, which has one dimension at least; got an empty array.`);
